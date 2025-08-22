@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-cn">
+
+<head>
+  <meta charset="utf-8">
+  <title>rgb2oklch wasm 最小示例</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+      padding: 16px;
+    }
+
+    label {
+      display: inline-block;
+      width: 24px;
+    }
+
+    input[type=number] {
+      width: 80px;
+    }
+
+    .row {
+      margin: 8px 0;
+    }
+
+    pre {
+      background: #111;
+      color: #eee;
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    button {
+      padding: 6px 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>rgb2oklch (纯 JS + Wasm, 无胶水)</h2>
+  <div class="row">
+    <label for="r">R</label>
+    <input id="r" type="number" min="0" max="255" value="255">
+    <label for="g">G</label>
+    <input id="g" type="number" min="0" max="255" value="0">
+    <label for="b">B</label>
+    <input id="b" type="number" min="0" max="255" value="0">
+    <button id="run">转换</button>
+  </div>
+  <pre id="out">加载中...</pre>
+
+  <h2 style="margin-top:24px">oklch2rgb (纯 JS + Wasm, 无胶水)</h2>
+  <div class="row">
+    <label for="l">L</label>
+    <input id="l" type="number" min="0" max="1" step="0.000001" value="0.62796">
+    <label for="c">C</label>
+    <input id="c" type="number" min="0" step="0.000001" value="0.25754">
+    <label for="h">h</label>
+    <input id="h" type="number" min="0" max="360" step="0.000001" value="29.23388">
+    <button id="run2">转换</button>
+  </div>
+  <pre id="out2">加载中...</pre>
+
+  <script>
+    // 纯原生加载 .wasm（不使用 Emscripten 生成的 JS）
+    // 需要浏览器通过 HTTP(S) 提供正确的 MIME: application/wasm
+    let rgb2oklchExports, rgb2oklchMemory;
+    let oklch2rgbExports, oklch2rgbMemory;
+
+    async function loadRgb2OklchWasm() {
+      // 尝试使用 instantiateStreaming（服务器需正确 wasm MIME），否则回退到 arrayBuffer
+      try {
+        const resp = await fetch('rgb2oklch.wasm');
+        const source = resp.headers.get('content-type')?.includes('application/wasm')
+          ? WebAssembly.instantiateStreaming(fetch('rgb2oklch.wasm'), {})
+          : WebAssembly.instantiate(await resp.arrayBuffer(), {});
+        const { instance } = await source;
+        rgb2oklchExports = instance.exports;
+        rgb2oklchMemory = rgb2oklchExports.memory; // WebAssembly.Memory
+        document.getElementById('out').textContent = 'WASM 已加载';
+      } catch (e) {
+        document.getElementById('out').textContent = '加载 WASM 失败: ' + e;
+        console.error(e);
+      }
+    }
+
+    async function loadOklch2RgbWasm() {
+      try {
+        const resp = await fetch('oklch2rgb.wasm');
+        const source = resp.headers.get('content-type')?.includes('application/wasm')
+          ? WebAssembly.instantiateStreaming(fetch('oklch2rgb.wasm'), {})
+          : WebAssembly.instantiate(await resp.arrayBuffer(), {});
+        const { instance } = await source;
+        oklch2rgbExports = instance.exports;
+        oklch2rgbMemory = oklch2rgbExports.memory;
+        document.getElementById('out2').textContent = 'WASM 已加载';
+      } catch (e) {
+        document.getElementById('out2').textContent = '加载 WASM 失败: ' + e;
+        console.error(e);
+      }
+    }
+
+    function rgb2oklch(r, g, b) {
+      if (!rgb2oklchExports) { return 'WASM 未就绪'; }
+      // 调用导出的 rgb2oklch_calc_js(r,g,b) -> 返回指向 3 个 double 的指针
+      const ptr = rgb2oklchExports.rgb2oklch_calc_js(r | 0, g | 0, b | 0) >>> 0;
+      const f64 = new Float64Array(rgb2oklchMemory.buffer, ptr, 3);
+      let L = f64[0];
+      let C = f64[1];
+      let h = f64[2];
+      // 与 C 程序一致的展示：6 位小数，去尾零，C≈0 时强制 h=0
+      const tiny = 1e-15;
+      const fmt = (x) => {
+        if (Math.abs(x) < tiny) x = 0;
+        let s = x.toFixed(6);
+        // 去掉多余的 0 和小数点
+        s = s.replace(/\.0+$/, '').replace(/(\.[0-9]*?)0+$/, '$1');
+        return s;
+      };
+      if (Math.abs(C) < tiny) { C = 0; h = 0; }
+      return `L ${fmt(L)}  C ${fmt(C)}  h ${fmt(h)}`;
+    }
+
+    document.getElementById('run').addEventListener('click', () => {
+      const r = +document.getElementById('r').value;
+      const g = +document.getElementById('g').value;
+      const b = +document.getElementById('b').value;
+      document.getElementById('out').textContent = rgb2oklch(r, g, b);
+    });
+
+    function oklch2rgb(L, C, h) {
+      if (!oklch2rgbExports) { return 'WASM 未就绪'; }
+      // 调用导出的 oklch2rgb_calc_js(L,C,h) -> 返回指向 3 个 int32 的指针
+      const ptr = oklch2rgbExports.oklch2rgb_calc_js(L, C, h) >>> 0;
+      const i32 = new Int32Array(oklch2rgbMemory.buffer, ptr, 3);
+      const R = i32[0] | 0;
+      const G = i32[1] | 0;
+      const B = i32[2] | 0;
+      return `R ${R}  G ${G}  B ${B}`;
+    }
+
+    document.getElementById('run2').addEventListener('click', () => {
+      const L = +document.getElementById('l').value;
+      const C = +document.getElementById('c').value;
+      const H = +document.getElementById('h').value;
+      document.getElementById('out2').textContent = oklch2rgb(L, C, H);
+    });
+
+    loadRgb2OklchWasm();
+    loadOklch2RgbWasm();
+  </script>
+</body>
+
+</html>
