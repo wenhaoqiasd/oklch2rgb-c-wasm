@@ -515,8 +515,8 @@ static void kmeans_run(const RGBf *samples, int n, Cluster *clusters, int K, int
     }
 
     int changed_any = 0;
-    // 并行计算：最近中心与 bestd2
-    #pragma omp parallel for schedule(static) reduction(| : changed_any)
+// 并行计算：最近中心与 bestd2
+#pragma omp parallel for schedule(static) reduction(| : changed_any)
     for (int i = 0; i < n; ++i)
     {
       double best = 1e300;
