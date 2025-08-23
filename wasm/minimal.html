@@ -378,6 +378,7 @@
         const hueDist = opts.hueDistance ?? 1 / 12; // ~30°
         const alphaThreshold = opts.alphaThreshold ?? 250;
         const maxColors = opts.maxColors ?? 16;
+        console.time("load extract-colors.wasm");
 
         // 调用 wasm
         const outPtr =
@@ -394,7 +395,7 @@
             maxColors | 0
           ) >>> 0;
         if (!outPtr) throw new Error("extract_colors_from_rgba_js 失败");
-
+        console.timeEnd("load extract-colors.wasm");
         // 读取结果缓冲（double）
         const f64 = new Float64Array(extractMemory.buffer, outPtr, 1 + 8 * 64);
         const m = Math.max(0, Math.min(64, Math.floor(f64[0])));

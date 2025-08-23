@@ -39,6 +39,23 @@
 #include <math.h>
 #include <time.h>
 
+// 微优化辅助宏：分支预测与内联提示
+#ifndef LIKELY
+#define LIKELY(x) (__builtin_expect(!!(x), 1))
+#define UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+#ifndef INLINE
+#define INLINE inline __attribute__((always_inline))
+#endif
+
+#if defined(__wasm_simd128__)
+#include <wasm_simd128.h>
+#endif
+
+#ifdef ENABLE_OMP
+#include <omp.h>
+#endif
+
 typedef struct
 {
   int pixels;         // 目标样本像素预算
@@ -59,7 +76,7 @@ typedef struct
 
 typedef struct
 {
-  double r, g, b; // 0..1 归一化
+  float r, g, b; // 0..1 归一化（内部计算使用 float，输出/累计时用 double）
 } RGBf;
 
 typedef struct
@@ -68,7 +85,15 @@ typedef struct
   double weight; // 聚类内样本数量（权重）
 } Cluster;
 
-static double clampd(double x, double lo, double hi)
+// ColorAgg：合并后的颜色及其面积（weight），并缓存 HSL 以避免重复计算
+typedef struct
+{
+  RGBf color;
+  double weight;
+  double h, s, l; // 缓存的 HSL 值（0..1）
+} ColorAgg;
+
+static INLINE double clampd(double x, double lo, double hi)
 {
   if (x < lo)
     return lo;
@@ -160,7 +185,7 @@ static void free_image(Image *im)
 }
 
 // 将 RGB（0..1）转换为 H、S、L（0..1）。Hue ∈ [0,1)，S/L ∈ [0,1]。
-static void rgb_to_hsl(double r, double g, double b, double *h, double *s, double *l)
+static INLINE void rgb_to_hsl(double r, double g, double b, double *h, double *s, double *l)
 {
   double maxv = fmax(r, fmax(g, b));
   double minv = fmin(r, fmin(g, b));
@@ -190,7 +215,7 @@ static void rgb_to_hsl(double r, double g, double b, double *h, double *s, doubl
   *l = lval;
 }
 
-static double hue_arc_dist(double h1, double h2)
+static INLINE double hue_arc_dist(double h1, double h2)
 {
   double d = fabs(h1 - h2);
   if (d > 0.5)
@@ -199,17 +224,26 @@ static double hue_arc_dist(double h1, double h2)
 }
 
 // 归一化 RGB 距离，范围 [0,1]，黑白约为 1。
-static double rgb_norm_dist(RGBf a, RGBf b)
+static INLINE double rgb_norm_dist(RGBf a, RGBf b)
 {
-  double dr = a.r - b.r;
-  double dg = a.g - b.g;
-  double db = a.b - b.b;
+  double dr = (double)a.r - (double)b.r;
+  double dg = (double)a.g - (double)b.g;
+  double db = (double)a.b - (double)b.b;
   double e = sqrt(dr * dr + dg * dg + db * db);
   return e / 1.7320508075688772; // sqrt(3)
 }
 
+// 不开方、不归一的平方距离（用于“只比较大小”的场景，常数因子无关紧要）
+static INLINE double rgb_dist2_raw(RGBf a, RGBf b)
+{
+  double dr = (double)a.r - (double)b.r;
+  double dg = (double)a.g - (double)b.g;
+  double db = (double)a.b - (double)b.b;
+  return dr * dr + dg * dg + db * db; // 范围 [0, 3]
+}
+
 // KMeans++ 初始化：先随机一个中心，再按距离平方加权挑选其余中心
-static void kmeans_pp_init(const RGBf *samples, int n, Cluster *clusters, int K)
+static void kmeans_pp_init(const RGBf *restrict samples, int n, Cluster *restrict clusters, int K)
 {
   if (n <= 0 || K <= 0)
     return;
@@ -228,10 +262,9 @@ static void kmeans_pp_init(const RGBf *samples, int n, Cluster *clusters, int K)
     return;
   }
 
+  // 使用未归一化的平方距离，避免重复 sqrt
   for (int i = 0; i < n; ++i)
-    dist2[i] = rgb_norm_dist(samples[i], clusters[0].color);
-  for (int i = 0; i < n; ++i)
-    dist2[i] = dist2[i] * dist2[i];
+    dist2[i] = rgb_dist2_raw(samples[i], clusters[0].color);
 
   for (int k = 1; k < K; ++k)
   {
@@ -262,8 +295,7 @@ static void kmeans_pp_init(const RGBf *samples, int n, Cluster *clusters, int K)
     // 更新每个样本到最近中心的 dist2
     for (int i = 0; i < n; ++i)
     {
-      double d = rgb_norm_dist(samples[i], clusters[k].color);
-      d = d * d;
+      double d = rgb_dist2_raw(samples[i], clusters[k].color);
       if (d < dist2[i])
         dist2[i] = d;
     }
@@ -281,52 +313,181 @@ static void kmeans_run(const RGBf *samples, int n, Cluster *clusters, int K, int
   for (int i = 0; i < n; ++i)
     assign[i] = -1;
 
+  // 将簇累加缓冲移出迭代循环，避免反复分配/释放
+  double *sr = (double *)calloc((size_t)K, sizeof(double));
+  double *sg = (double *)calloc((size_t)K, sizeof(double));
+  double *sb = (double *)calloc((size_t)K, sizeof(double));
+  // SIMD 辅助：中心通道数组（float）
+  float *cr = (float *)malloc((size_t)K * sizeof(float));
+  float *cg = (float *)malloc((size_t)K * sizeof(float));
+  float *cb = (float *)malloc((size_t)K * sizeof(float));
+  // 记录每个样本到最近中心的平方距离，用于空簇重置
+  double *bestd2 = (double *)malloc((size_t)n * sizeof(double));
+  if (!sr || !sg || !sb)
+  {
+    if (sr)
+      free(sr);
+    if (sg)
+      free(sg);
+    if (sb)
+      free(sb);
+    free(assign);
+    return;
+  }
+  if (!cr || !cg || !cb || !bestd2)
+  {
+    if (cr)
+      free(cr);
+    if (cg)
+      free(cg);
+    if (cb)
+      free(cb);
+    if (bestd2)
+      free(bestd2);
+    free(sr);
+    free(sg);
+    free(sb);
+    free(assign);
+    return;
+  }
+
+  // 初始化中心通道数组
+  for (int k = 0; k < K; ++k)
+  {
+    cr[k] = clusters[k].color.r;
+    cg[k] = clusters[k].color.g;
+    cb[k] = clusters[k].color.b;
+  }
+
   for (int it = 0; it < iters; ++it)
   {
     int changed = 0;
+
+#ifndef ENABLE_OMP
+    // ---- 串行路径：与原实现一致 ----
     // 重置各簇的累加器
     for (int k = 0; k < K; ++k)
     {
       clusters[k].weight = 0.0;
-      clusters[k].color.r = clusters[k].color.r;
-    }
-    double *sr = (double *)calloc((size_t)K, sizeof(double));
-    double *sg = (double *)calloc((size_t)K, sizeof(double));
-    double *sb = (double *)calloc((size_t)K, sizeof(double));
-    if (!sr || !sg || !sb)
-    {
-      if (sr)
-        free(sr);
-      if (sg)
-        free(sg);
-      if (sb)
-        free(sb);
-      break;
+      sr[k] = sg[k] = sb[k] = 0.0;
     }
 
-    // 赋值阶段：将样本分配到最近的中心
+    // 赋值阶段：将样本分配到最近的中心（比较平方距离，避免 sqrt）
     for (int i = 0; i < n; ++i)
     {
-      double best = 1e9;
+      double best = 1e300;
       int bi = 0;
-      for (int k = 0; k < K; ++k)
+#if defined(__wasm_simd128__)
+      // Wasm SIMD：一次比较 4 个中心
+      const float sr0 = samples[i].r;
+      const float sg0 = samples[i].g;
+      const float sb0v = samples[i].b;
+      v128_t vr = wasm_f32x4_splat(sr0);
+      v128_t vg = wasm_f32x4_splat(sg0);
+      v128_t vbv = wasm_f32x4_splat(sb0v);
+      int k = 0;
+      for (; k + 4 <= K; k += 4)
       {
-        double d = rgb_norm_dist(samples[i], clusters[k].color);
-        if (d < best)
+        v128_t crv = wasm_v128_load(&cr[k]);
+        v128_t cgv = wasm_v128_load(&cg[k]);
+        v128_t cbv4 = wasm_v128_load(&cb[k]);
+        v128_t dr = wasm_f32x4_sub(vr, crv);
+        v128_t dg = wasm_f32x4_sub(vg, cgv);
+        v128_t dbv = wasm_f32x4_sub(vbv, cbv4);
+        v128_t d2v = wasm_f32x4_add(
+            wasm_f32x4_mul(dr, dr),
+            wasm_f32x4_add(wasm_f32x4_mul(dg, dg), wasm_f32x4_mul(dbv, dbv)));
+        float d0 = wasm_f32x4_extract_lane(d2v, 0);
+        if ((double)d0 < best)
         {
-          best = d;
+          best = (double)d0;
+          bi = k + 0;
+        }
+        float d1 = wasm_f32x4_extract_lane(d2v, 1);
+        if ((double)d1 < best)
+        {
+          best = (double)d1;
+          bi = k + 1;
+        }
+        float d2 = wasm_f32x4_extract_lane(d2v, 2);
+        if ((double)d2 < best)
+        {
+          best = (double)d2;
+          bi = k + 2;
+        }
+        float d3 = wasm_f32x4_extract_lane(d2v, 3);
+        if ((double)d3 < best)
+        {
+          best = (double)d3;
+          bi = k + 3;
+        }
+      }
+      for (; k < K; ++k)
+      {
+        double d2s = rgb_dist2_raw(samples[i], clusters[k].color);
+        if (d2s < best)
+        {
+          best = d2s;
           bi = k;
         }
       }
+#else
+      for (int k = 0; k < K; ++k)
+      {
+        double d2s = rgb_dist2_raw(samples[i], clusters[k].color);
+        if (d2s < best)
+        {
+          best = d2s;
+          bi = k;
+        }
+      }
+#endif
+      bestd2[i] = best;
       if (assign[i] != bi)
       {
         assign[i] = bi;
         changed = 1;
       }
-      sr[bi] += samples[i].r;
-      sg[bi] += samples[i].g;
-      sb[bi] += samples[i].b;
+      sr[bi] += (double)samples[i].r;
+      sg[bi] += (double)samples[i].g;
+      sb[bi] += (double)samples[i].b;
       clusters[bi].weight += 1.0;
+    }
+
+    // 稳定性微调：空簇重置到最远样本
+    for (int k = 0; k < K; ++k)
+    {
+      if (clusters[k].weight > 0.0)
+        continue;
+      // 找到最远样本
+      int farIdx = -1;
+      double farD2 = -1.0;
+      for (int i = 0; i < n; ++i)
+      {
+        if (bestd2[i] > farD2)
+        {
+          farD2 = bestd2[i];
+          farIdx = i;
+        }
+      }
+      if (farIdx >= 0)
+      {
+        int old = assign[farIdx];
+        if (old >= 0 && old < K)
+        {
+          sr[old] -= (double)samples[farIdx].r;
+          sg[old] -= (double)samples[farIdx].g;
+          sb[old] -= (double)samples[farIdx].b;
+          if (clusters[old].weight > 0.0)
+            clusters[old].weight -= 1.0;
+        }
+        assign[farIdx] = k;
+        sr[k] += (double)samples[farIdx].r;
+        sg[k] += (double)samples[farIdx].g;
+        sb[k] += (double)samples[farIdx].b;
+        clusters[k].weight += 1.0;
+        changed = 1;
+      }
     }
 
     // 更新阶段：用簇内均值更新中心
@@ -334,18 +495,191 @@ static void kmeans_run(const RGBf *samples, int n, Cluster *clusters, int K, int
     {
       if (clusters[k].weight > 0.0)
       {
-        clusters[k].color.r = sr[k] / clusters[k].weight;
-        clusters[k].color.g = sg[k] / clusters[k].weight;
-        clusters[k].color.b = sb[k] / clusters[k].weight;
+        clusters[k].color.r = (float)(sr[k] / clusters[k].weight);
+        clusters[k].color.g = (float)(sg[k] / clusters[k].weight);
+        clusters[k].color.b = (float)(sb[k] / clusters[k].weight);
+      }
+      // 刷新中心通道数组（供下一轮 SIMD 使用）
+      cr[k] = clusters[k].color.r;
+      cg[k] = clusters[k].color.g;
+      cb[k] = clusters[k].color.b;
+    }
+
+#else // ENABLE_OMP
+    // ---- 并行路径（OpenMP，可选）：先并行计算 assign/bestd2，再串行计数与累加 ----
+    // 重置各簇的累加器与权重（累加在后续串行阶段进行）
+    for (int k = 0; k < K; ++k)
+    {
+      clusters[k].weight = 0.0;
+      sr[k] = sg[k] = sb[k] = 0.0;
+    }
+
+    int changed_any = 0;
+    // 并行计算：最近中心与 bestd2
+    #pragma omp parallel for schedule(static) reduction(| : changed_any)
+    for (int i = 0; i < n; ++i)
+    {
+      double best = 1e300;
+      int bi = 0;
+#if defined(__wasm_simd128__)
+      const float sr0 = samples[i].r;
+      const float sg0 = samples[i].g;
+      const float sb0v = samples[i].b;
+      v128_t vr = wasm_f32x4_splat(sr0);
+      v128_t vg = wasm_f32x4_splat(sg0);
+      v128_t vbv = wasm_f32x4_splat(sb0v);
+      int k = 0;
+      for (; k + 4 <= K; k += 4)
+      {
+        v128_t crv = wasm_v128_load(&cr[k]);
+        v128_t cgv = wasm_v128_load(&cg[k]);
+        v128_t cbv4 = wasm_v128_load(&cb[k]);
+        v128_t dr = wasm_f32x4_sub(vr, crv);
+        v128_t dg = wasm_f32x4_sub(vg, cgv);
+        v128_t dbv = wasm_f32x4_sub(vbv, cbv4);
+        v128_t d2v = wasm_f32x4_add(
+            wasm_f32x4_mul(dr, dr),
+            wasm_f32x4_add(wasm_f32x4_mul(dg, dg), wasm_f32x4_mul(dbv, dbv)));
+        float d0 = wasm_f32x4_extract_lane(d2v, 0);
+        if ((double)d0 < best)
+        {
+          best = (double)d0;
+          bi = k + 0;
+        }
+        float d1 = wasm_f32x4_extract_lane(d2v, 1);
+        if ((double)d1 < best)
+        {
+          best = (double)d1;
+          bi = k + 1;
+        }
+        float d2 = wasm_f32x4_extract_lane(d2v, 2);
+        if ((double)d2 < best)
+        {
+          best = (double)d2;
+          bi = k + 2;
+        }
+        float d3 = wasm_f32x4_extract_lane(d2v, 3);
+        if ((double)d3 < best)
+        {
+          best = (double)d3;
+          bi = k + 3;
+        }
+      }
+      for (; k < K; ++k)
+      {
+        double d2s = rgb_dist2_raw(samples[i], clusters[k].color);
+        if (d2s < best)
+        {
+          best = d2s;
+          bi = k;
+        }
+      }
+#else
+      for (int k = 0; k < K; ++k)
+      {
+        double d2s = rgb_dist2_raw(samples[i], clusters[k].color);
+        if (d2s < best)
+        {
+          best = d2s;
+          bi = k;
+        }
+      }
+#endif
+      bestd2[i] = best;
+      if (assign[i] != bi)
+      {
+        assign[i] = bi;
+        changed_any = 1;
+      }
+      else
+      {
+        // 仍然写回（保持一致性）
+        assign[i] = bi;
+      }
+    }
+    changed = changed_any;
+
+    // 计数每个簇的样本数
+    int *counts = (int *)calloc((size_t)K, sizeof(int));
+    if (!counts)
+    {
+      // 回退：若内存不足，认为未变化并提前退出
+      break;
+    }
+    for (int i = 0; i < n; ++i)
+    {
+      int k = assign[i];
+      if ((unsigned)k < (unsigned)K)
+        counts[k]++;
+    }
+
+    // 稳定性微调：将空簇重置到“当前最远”样本
+    for (int k = 0; k < K; ++k)
+    {
+      if (counts[k] > 0)
+        continue;
+      int farIdx = -1;
+      double farD2 = -1.0;
+      for (int i = 0; i < n; ++i)
+      {
+        if (bestd2[i] > farD2)
+        {
+          farD2 = bestd2[i];
+          farIdx = i;
+        }
+      }
+      if (farIdx >= 0)
+      {
+        int old = assign[farIdx];
+        if ((unsigned)old < (unsigned)K && counts[old] > 0)
+          counts[old]--;
+        assign[farIdx] = k;
+        counts[k]++;
+        changed = 1;
       }
     }
 
-    free(sr);
-    free(sg);
-    free(sb);
+    // 串行累加：按最终 assign 计算簇累加与权重
+    for (int i = 0; i < n; ++i)
+    {
+      int k = assign[i];
+      if ((unsigned)k < (unsigned)K)
+      {
+        sr[k] += (double)samples[i].r;
+        sg[k] += (double)samples[i].g;
+        sb[k] += (double)samples[i].b;
+      }
+    }
+    for (int k = 0; k < K; ++k)
+      clusters[k].weight = (double)counts[k];
+
+    free(counts);
+
+    // 更新阶段：用簇内均值更新中心，并刷新 SIMD 通道缓冲
+    for (int k = 0; k < K; ++k)
+    {
+      if (clusters[k].weight > 0.0)
+      {
+        clusters[k].color.r = (float)(sr[k] / clusters[k].weight);
+        clusters[k].color.g = (float)(sg[k] / clusters[k].weight);
+        clusters[k].color.b = (float)(sb[k] / clusters[k].weight);
+      }
+      cr[k] = clusters[k].color.r;
+      cg[k] = clusters[k].color.g;
+      cb[k] = clusters[k].color.b;
+    }
+#endif // ENABLE_OMP
+
     if (!changed)
       break;
   }
+  free(sr);
+  free(sg);
+  free(sb);
+  free(cr);
+  free(cg);
+  free(cb);
+  free(bestd2);
   free(assign);
 }
 
@@ -360,12 +694,6 @@ static int cmp_cluster_weight_desc(const void *a, const void *b)
   return 0;
 }
 
-typedef struct
-{
-  RGBf color;
-  double weight;
-} ColorAgg;
-
 static void merge_colors(const Cluster *clusters, int K, double totalWeight, const Options *opt,
                          ColorAgg **outArr, int *outN)
 {
@@ -376,6 +704,7 @@ static void merge_colors(const Cluster *clusters, int K, double totalWeight, con
 
   ColorAgg *acc = (ColorAgg *)malloc((size_t)K * sizeof(ColorAgg));
   int m = 0;
+  const double rgb_thresh2 = opt->distance * opt->distance * 3.0; // 归一化阈值换算为平方距离
 
   for (int i = 0; i < K; ++i)
   {
@@ -383,32 +712,35 @@ static void merge_colors(const Cluster *clusters, int K, double totalWeight, con
       continue;
     RGBf c = sorted[i].color;
     double w = sorted[i].weight;
+    // 为待合并颜色预计算 HSL
+    double hi, si, li;
+    rgb_to_hsl((double)c.r, (double)c.g, (double)c.b, &hi, &si, &li);
 
     // 尝试合并到已有的颜色桶
     int merged = 0;
     for (int j = 0; j < m; ++j)
     {
-      // RGB 空间距离
-      double d = rgb_norm_dist(c, acc[j].color);
-      // HSL 各维度的差异
-      double h1, s1, l1, h2, s2, l2;
-      rgb_to_hsl(c.r, c.g, c.b, &h1, &s1, &l1);
-      rgb_to_hsl(acc[j].color.r, acc[j].color.g, acc[j].color.b, &h2, &s2, &l2);
-      double hd = hue_arc_dist(h1, h2);
-      double sd = fabs(s1 - s2);
-      double ld = fabs(l1 - l2);
+      // RGB 空间距离（比较平方距离，阈值也换算为平方尺度）
+      // 归一化阈值 distance 定义在 e_norm = e / sqrt(3)，比较 e_norm <= distance
+      // 等价于比较 e^2 <= distance^2 * 3
+      double hd = hue_arc_dist(hi, acc[j].h);
+      double sd = fabs(si - acc[j].s);
+      double ld = fabs(li - acc[j].l);
 
-      if (d <= opt->distance || (sd < opt->satDist && ld < opt->lightDist && hd < opt->hueDist))
+      if (rgb_dist2_raw(c, acc[j].color) <= rgb_thresh2 ||
+          (sd < opt->satDist && ld < opt->lightDist && hd < opt->hueDist))
       {
         // 加权合并到 acc[j]
         double tw = acc[j].weight + w;
         if (tw > 0.0)
         {
-          acc[j].color.r = (acc[j].color.r * acc[j].weight + c.r * w) / tw;
-          acc[j].color.g = (acc[j].color.g * acc[j].weight + c.g * w) / tw;
-          acc[j].color.b = (acc[j].color.b * acc[j].weight + c.b * w) / tw;
+          acc[j].color.r = (float)(((double)acc[j].color.r * acc[j].weight + (double)c.r * w) / tw);
+          acc[j].color.g = (float)(((double)acc[j].color.g * acc[j].weight + (double)c.g * w) / tw);
+          acc[j].color.b = (float)(((double)acc[j].color.b * acc[j].weight + (double)c.b * w) / tw);
         }
         acc[j].weight = tw;
+        // 更新缓存的 HSL
+        rgb_to_hsl((double)acc[j].color.r, (double)acc[j].color.g, (double)acc[j].color.b, &acc[j].h, &acc[j].s, &acc[j].l);
         merged = 1;
         break;
       }
@@ -417,6 +749,9 @@ static void merge_colors(const Cluster *clusters, int K, double totalWeight, con
     {
       acc[m].color = c;
       acc[m].weight = w;
+      acc[m].h = hi;
+      acc[m].s = si;
+      acc[m].l = li;
       m++;
     }
   }
@@ -477,11 +812,11 @@ static int extract_colors_core(const uint8_t *rgba, int w, int h, const Options 
     {
       const uint8_t *p = row + (size_t)x * 4;
       uint8_t r = p[0], g = p[1], b = p[2], a = p[3];
-      if (a <= opt->alphaThreshold)
+      if (UNLIKELY(a <= opt->alphaThreshold))
         continue; // 默认像素过滤：alpha > 250
-      samples[n].r = r / 255.0;
-      samples[n].g = g / 255.0;
-      samples[n].b = b / 255.0;
+      samples[n].r = (float)r * (1.0f / 255.0f);
+      samples[n].g = (float)g * (1.0f / 255.0f);
+      samples[n].b = (float)b * (1.0f / 255.0f);
       n++;
     }
   }
@@ -536,12 +871,12 @@ static int extract_colors_from_image(const Image *im, const Options *opt)
   for (int i = 0; i < m; ++i)
   {
     RGBf c = agg[i].color;
-    double h_, s_, l_;
-    rgb_to_hsl(c.r, c.g, c.b, &h_, &s_, &l_);
-    int R = (int)lround(clampd(c.r, 0.0, 1.0) * 255.0);
-    int G = (int)lround(clampd(c.g, 0.0, 1.0) * 255.0);
-    int B = (int)lround(clampd(c.b, 0.0, 1.0) * 255.0);
-    double intensity = (c.r + c.g + c.b) / 3.0; // 0..1
+    // 直接使用缓存的 HSL，避免重复计算
+    double h_ = agg[i].h, s_ = agg[i].s, l_ = agg[i].l;
+    int R = (int)lround(clampd((double)c.r, 0.0, 1.0) * 255.0);
+    int G = (int)lround(clampd((double)c.g, 0.0, 1.0) * 255.0);
+    int B = (int)lround(clampd((double)c.b, 0.0, 1.0) * 255.0);
+    double intensity = ((double)c.r + (double)c.g + (double)c.b) / 3.0; // 0..1
 
     printf("  { ");
     printf("\"hex\": ");
@@ -601,12 +936,12 @@ static void pack_results_to_out(const ColorAgg *agg, int m)
   for (int i = 0; i < m; ++i)
   {
     RGBf c = agg[i].color;
-    double h_, s_, l_;
-    rgb_to_hsl(c.r, c.g, c.b, &h_, &s_, &l_);
-    double R = clampd(c.r, 0.0, 1.0) * 255.0;
-    double G = clampd(c.g, 0.0, 1.0) * 255.0;
-    double B = clampd(c.b, 0.0, 1.0) * 255.0;
-    double intensity = (c.r + c.g + c.b) / 3.0;
+    // 直接使用缓存的 HSL，避免重复计算
+    double h_ = agg[i].h, s_ = agg[i].s, l_ = agg[i].l;
+    double R = clampd((double)c.r, 0.0, 1.0) * 255.0;
+    double G = clampd((double)c.g, 0.0, 1.0) * 255.0;
+    double B = clampd((double)c.b, 0.0, 1.0) * 255.0;
+    double intensity = ((double)c.r + (double)c.g + (double)c.b) / 3.0;
     size_t base = 1 + (size_t)i * 8;
     g_out_buf[base + 0] = R;
     g_out_buf[base + 1] = G;
