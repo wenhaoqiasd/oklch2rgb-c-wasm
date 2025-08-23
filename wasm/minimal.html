@@ -88,20 +88,114 @@
     <script>
       // 纯原生加载 .wasm（不使用 Emscripten 生成的 JS）
       // 需要浏览器通过 HTTP(S) 提供正确的 MIME: application/wasm
+      // 若 .wasm 是 WASI 构建，提供最小 wasi_snapshot_preview1 stub 以便在浏览器中实例化。
       let rgb2oklchExports, rgb2oklchMemory;
       let oklch2rgbExports, oklch2rgbMemory;
       let extractExports, extractMemory;
 
-      async function loadRgb2OklchWasm() {
-        // 尝试使用 instantiateStreaming（服务器需正确 wasm MIME），否则回退到 arrayBuffer
+      // ---- 最小 WASI stub 与带回退的实例化工具 ----
+      function createWasiStub(memory) {
+        const encoder = new TextEncoder();
+        // 简易写入：忽略内容，仅报告写入 0 字节，避免报错
+        function fd_write(fd, iov, iovcnt, pOut) {
+          try {
+            const view = new DataView(memory.buffer);
+            view.setUint32(pOut >>> 0, 0, true);
+          } catch (_) {}
+          return 0; // __WASI_ERRNO_SUCCESS
+        }
+        function ret0() {
+          return 0;
+        }
+        function enosys() {
+          return 52; // __WASI_ERRNO_ENOSYS
+        }
+        function proc_exit(code) {
+          // 将 WASI 退出转为异常，避免整个页面崩溃
+          throw new Error("WASI proc_exit: " + code);
+        }
+        return {
+          args_get: ret0,
+          args_sizes_get: function (pArgc, pArgvBufSize) {
+            try {
+              const view = new DataView(memory.buffer);
+              view.setUint32(pArgc >>> 0, 0, true);
+              view.setUint32(pArgvBufSize >>> 0, 0, true);
+            } catch (_) {}
+            return 0;
+          },
+          environ_get: ret0,
+          environ_sizes_get: function (pCount, pBufSize) {
+            try {
+              const view = new DataView(memory.buffer);
+              view.setUint32(pCount >>> 0, 0, true);
+              view.setUint32(pBufSize >>> 0, 0, true);
+            } catch (_) {}
+            return 0;
+          },
+          fd_write,
+          fd_close: ret0,
+          fd_read: enosys,
+          fd_seek: enosys,
+          fd_fdstat_get: ret0,
+          fd_fdstat_set_flags: ret0,
+          fd_sync: ret0,
+          fd_prestat_get: enosys,
+          fd_prestat_dir_name: enosys,
+          path_open: enosys,
+          path_unlink_file: enosys,
+          path_create_directory: enosys,
+          path_remove_directory: enosys,
+          path_readlink: enosys,
+          path_filestat_get: enosys,
+          fd_filestat_get: enosys,
+          poll_oneoff: enosys,
+          clock_time_get: ret0,
+          random_get: function (ptr, len) {
+            try {
+              const dst = new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0);
+              crypto.getRandomValues(dst);
+            } catch (_) {}
+            return 0;
+          },
+          proc_exit,
+        };
+      }
+
+      async function instantiateWasmWithFallback(url) {
+        // 先尝试无需 imports 的实例化（适用于独立 wasm）
         try {
-          const resp = await fetch("rgb2oklch.wasm");
+          const resp = await fetch(url);
           const source = resp.headers
             .get("content-type")
             ?.includes("application/wasm")
-            ? WebAssembly.instantiateStreaming(fetch("rgb2oklch.wasm"), {})
+            ? WebAssembly.instantiateStreaming(fetch(url), {})
             : WebAssembly.instantiate(await resp.arrayBuffer(), {});
-          const { instance } = await source;
+          return (await source).instance;
+        } catch (e1) {
+          // 回退：提供最小 WASI 与 env/imports
+          const buf = await (await fetch(url)).arrayBuffer();
+          // 预创建一块内存以备某些模块需要 env.memory 导入
+          const memory = new WebAssembly.Memory({
+            initial: 256,
+            maximum: 16384,
+          });
+          const imports = {
+            wasi_snapshot_preview1: createWasiStub(memory),
+            env: {
+              memory,
+              abort: function () {},
+              emscripten_notify_memory_growth: function () {},
+            },
+          };
+          const { instance } = await WebAssembly.instantiate(buf, imports);
+          return instance;
+        }
+      }
+
+      async function loadRgb2OklchWasm() {
+        try {
+          const instance = await instantiateWasmWithFallback("rgb2oklch.wasm");
           rgb2oklchExports = instance.exports;
           rgb2oklchMemory = rgb2oklchExports.memory; // WebAssembly.Memory
           document.getElementById("out").textContent = "WASM 已加载";
@@ -113,13 +207,7 @@
 
       async function loadOklch2RgbWasm() {
         try {
-          const resp = await fetch("oklch2rgb.wasm");
-          const source = resp.headers
-            .get("content-type")
-            ?.includes("application/wasm")
-            ? WebAssembly.instantiateStreaming(fetch("oklch2rgb.wasm"), {})
-            : WebAssembly.instantiate(await resp.arrayBuffer(), {});
-          const { instance } = await source;
+          const instance = await instantiateWasmWithFallback("oklch2rgb.wasm");
           oklch2rgbExports = instance.exports;
           oklch2rgbMemory = oklch2rgbExports.memory;
           document.getElementById("out2").textContent = "WASM 已加载";
@@ -229,13 +317,9 @@
       // 加载 extract-colors.wasm
       async function loadExtractColorsWasm() {
         try {
-          const resp = await fetch("extract-colors.wasm");
-          const source = resp.headers
-            .get("content-type")
-            ?.includes("application/wasm")
-            ? WebAssembly.instantiateStreaming(fetch("extract-colors.wasm"), {})
-            : WebAssembly.instantiate(await resp.arrayBuffer(), {});
-          const { instance } = await source;
+          const instance = await instantiateWasmWithFallback(
+            "extract-colors.wasm"
+          );
           extractExports = instance.exports;
           extractMemory = extractExports.memory;
           document.getElementById("extract-out").textContent = "WASM 已加载";
