@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-extract-colors",
+			"type": "shell",
+			"command": "clang",
+			"args": [
+				"-O2",
+				"/Users/haoqiwen/Documents/oklch2rgb-c-wasm/extract-colors.c",
+				"-o",
+				"/Users/haoqiwen/Documents/oklch2rgb-c-wasm/extract-colors",
+				"-framework",
+				"ImageIO",
+				"-framework",
+				"CoreGraphics",
+				"-framework",
+				"CoreFoundation"
+			]
+		}
+	]
+}
