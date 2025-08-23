@@ -2,7 +2,7 @@
 <html lang="zh-cn">
   <head>
     <meta charset="utf-8" />
-    <title>rgb2oklch wasm 最小示例</title>
+    <title>颜色转换与图片取色</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
@@ -38,7 +38,7 @@
   </head>
 
   <body>
-    <h2>rgb2oklch (纯 JS + Wasm, 无胶水)</h2>
+    <h2>rgb2oklch</h2>
     <div class="row">
       <label for="r">R</label>
       <input id="r" type="number" min="0" max="255" value="255" />
@@ -50,7 +50,7 @@
     </div>
     <pre id="out">加载中...</pre>
 
-    <h2 style="margin-top: 24px">oklch2rgb (纯 JS + Wasm, 无胶水)</h2>
+    <h2 style="margin-top: 24px">oklch2rgb</h2>
     <div class="row">
       <label for="l">L</label>
       <input
@@ -283,12 +283,9 @@
       loadOklch2RgbWasm();
     </script>
 
-    <h2 style="margin-top: 24px">
-      extract-colors（图片取色，纯 JS + Wasm, 无胶水）
-    </h2>
+    <h2 style="margin-top: 24px">extract-colors</h2>
     <div class="row">
       <input id="file" type="file" accept="image/*" />
-      <button id="draw-demo">绘制示例图</button>
       <button id="extract">提取颜色</button>
     </div>
     <div
@@ -359,37 +356,7 @@
         });
       }
 
-      // 在 canvas 上绘制一张程序化示例图（色块+渐变）
-      function drawProgrammaticDemo() {
-        const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d");
-        const w = 480,
-          h = 320;
-        canvas.width = w;
-        canvas.height = h;
-        // 背景渐变
-        const g = ctx.createLinearGradient(0, 0, w, 0);
-        g.addColorStop(0, "#ff6b6b");
-        g.addColorStop(0.33, "#feca57");
-        g.addColorStop(0.66, "#1dd1a1");
-        g.addColorStop(1, "#54a0ff");
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, w, h);
-        // 前景色块
-        const colors = ["#222", "#fff", "#8e44ad", "#16a085", "#d35400"];
-        const cw = 80,
-          ch = 60,
-          pad = 12;
-        colors.forEach((c, i) => {
-          const x = pad + (i % 5) * (cw + pad);
-          const y = h - ch - pad;
-          ctx.fillStyle = c;
-          ctx.fillRect(x, y, cw, ch);
-          ctx.strokeStyle = "rgba(0,0,0,.2)";
-          ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
-        });
-        return ctx.getImageData(0, 0, w, h);
-      }
+      // 已移除示例图绘制逻辑
 
       // 调用 wasm 提取颜色
       function extractColorsFromImageData(imageData, opts = {}) {
@@ -496,19 +463,11 @@
         ).textContent = `图像 ${id.width}×${id.height}`;
       });
 
-      document.getElementById("draw-demo").addEventListener("click", () => {
-        const id = drawProgrammaticDemo();
-        document.getElementById(
-          "extract-out"
-        ).textContent = `图像 ${id.width}×${id.height}`;
-      });
-
       document.getElementById("extract").addEventListener("click", () => {
         try {
           const canvas = document.getElementById("canvas");
           if (!(canvas.width && canvas.height)) {
-            document.getElementById("extract-out").textContent =
-              "请先选择图片或点击“从示例图提取”";
+            document.getElementById("extract-out").textContent = "请先选择图片";
             return;
           }
           const ctx = canvas.getContext("2d");
