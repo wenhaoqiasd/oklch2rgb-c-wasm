@@ -1,12 +1,12 @@
-// OKLCH (numeric) -> sRGB (numeric) converter
-// Implementation notes:
-// - Math and matrices follow Björn Ottosson's OKLab/OKLCH reference:
+// OKLCH（数值）-> sRGB（数值）转换器
+// 实现说明：
+// - 数学与矩阵遵循 Björn Ottosson 的 OKLab/OKLCH 参考：
 //   https://bottosson.github.io/posts/oklab/
-// - Input: CLI args
+// - 输入：命令行参数
 //     L C h [rel]
-//     L in [0..1], C >= 0, h in degrees [0..360)
-//     rel (optional) in [0..1]: relative chroma ratio; when provided, C is ignored
-// - Output: three integers "R G B" (0..255), gamma-encoded sRGB, clamped
+//     L ∈ [0..1]，C ≥ 0，h 为角度 [0..360)
+//     rel（可选）∈ [0..1]：相对色度比例；提供该参数时将忽略 C
+// - 输出：三个整数 "R G B"（0..255），gamma 编码的 sRGB，并已夹取
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +29,7 @@ static double clamp(double x, double lo, double hi)
     return x;
 }
 
-// Parse a floating number (no % suffix)
+// 解析一个浮点数（不允许 % 后缀）
 static int parse_number(const char *s, double *out)
 {
     while (isspace((unsigned char)*s))
@@ -59,11 +59,11 @@ static double linear_to_srgb(double u)
     return 1.055 * pow(u, 1.0 / 2.4) - 0.055;
 }
 
-// ---- Helpers for OKLCH -> linear sRGB and gamut fallback ----
+// ---- OKLCH -> 线性 sRGB 以及色域回退的辅助函数 ----
 static void oklch_to_linear_rgb(double L, double C, double hdeg,
                                 double *r_lin, double *g_lin, double *b_lin)
 {
-    // Wrap hue
+    // 包裹色相（范围归一到 0..360）
     double h = fmod(hdeg, 360.0);
     if (h < 0)
         h += 360.0;
@@ -71,15 +71,15 @@ static void oklch_to_linear_rgb(double L, double C, double hdeg,
     double hr = h * M_PI / 180.0;
     double a = C * cos(hr);
     double b = C * sin(hr);
-    // OKLab -> LMS (nonlinear)
+    // OKLab -> LMS（非线性）
     double l = L + 0.3963377774 * a + 0.2158037573 * b;
     double m = L - 0.1055613458 * a - 0.0638541728 * b;
     double s = L - 0.0894841775 * a - 1.2914855480 * b;
-    // cube to linear LMS
+    // 立方得到线性 LMS
     double l3 = l * l * l;
     double m3 = m * m * m;
     double s3 = s * s * s;
-    // Linear sRGB from LMS^3
+    // 由 LMS^3 转换为线性 sRGB
     *r_lin = +4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
     *g_lin = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
     *b_lin = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
@@ -87,21 +87,21 @@ static void oklch_to_linear_rgb(double L, double C, double hdeg,
 
 static int is_linear_in_srgb_gamut(double r, double g, double b)
 {
-    const double eps = 1e-12; // tolerate tiny drift
+    const double eps = 1e-12; // 容忍极小的数值漂移
     return r >= -eps && r <= 1.0 + eps &&
            g >= -eps && g <= 1.0 + eps &&
            b >= -eps && b <= 1.0 + eps;
 }
 
-// Given L, h, and a target chroma C, find the largest C' in [0, C]
-// such that linear sRGB is within [0,1]. If already in gamut, returns C.
+// 给定 L、h 与目标色度 C，寻找区间 [0, C] 内最大的 C'，
+// 使得线性 sRGB 分量都落在 [0,1]。若已在色域内，直接返回 C。
 static double find_gamut_safe_chroma(double L, double C, double hdeg)
 {
     double r, g, b;
     oklch_to_linear_rgb(L, C, hdeg, &r, &g, &b);
     if (is_linear_in_srgb_gamut(r, g, b))
         return C;
-    // Binary search on scale factor k ∈ [0, 1]
+    // 在缩放因子 k ∈ [0,1] 上进行二分搜索
     double lo = 0.0, hi = 1.0;
     for (int i = 0; i < 30; i++)
     {
@@ -110,60 +110,61 @@ static double find_gamut_safe_chroma(double L, double C, double hdeg)
         oklch_to_linear_rgb(L, C * mid, hdeg, &r2, &g2, &b2);
         if (is_linear_in_srgb_gamut(r2, g2, b2))
         {
-            lo = mid; // can increase chroma
+            lo = mid; // 还能增大色度
         }
         else
         {
-            hi = mid; // too saturated
+            hi = mid; // 过饱和
         }
     }
     return C * lo;
 }
 
-// Compute maximum chroma (Cmax) for given L and h that still fits sRGB gamut.
-// Strategy: exponentially increase C until it exceeds gamut, then refine with
-// find_gamut_safe_chroma on that bound. This avoids assuming a fixed upper bound.
+// 计算给定 L 与 h 在 sRGB 色域内可达到的最大色度（Cmax）。
+// 策略：指数式增大 C，直到超出色域，再在该上界内用
+// find_gamut_safe_chroma 做精细二分。这样无需假定固定上界。
 static double max_chroma_for_srgb(double L, double hdeg)
 {
-    // Start with a small chroma and grow until out-of-gamut.
+    // 以较小的色度起步，逐步增大，直到超出色域。
     double C = 0.05;
     for (int i = 0; i < 12; i++)
     { // up to ~0.05 * 4096 = 204.8 as a hard cap
+        // 最多约 ~0.05 * 4096 = 204.8 作为硬上限
         double r, g, b;
         oklch_to_linear_rgb(L, C, hdeg, &r, &g, &b);
         if (!is_linear_in_srgb_gamut(r, g, b))
         {
-            // Refine to boundary within [0, C]
+            // 在区间 [0, C] 内细化到边界
             return find_gamut_safe_chroma(L, C, hdeg);
         }
         C *= 2.0;
     }
-    // If still in gamut (extremely unlikely), clamp via binary search anyway.
+    // 若仍在色域内（极不可能），也用二分法夹到边界。
     return find_gamut_safe_chroma(L, C, hdeg);
 }
 
 #ifdef __EMSCRIPTEN__
-// Export a minimal function for JS to call directly from Wasm.
-// Input: (L in [0..1], C >=0, h in degrees)
-// Output: returns a pointer to 3 int32 values [R,G,B] in 0..255.
+// 导出最小接口，供 JS 从 Wasm 直接调用。
+// 输入：（L ∈ [0..1]，C ≥ 0，h 为角度）
+// 输出：返回指向 3 个 int32 值 [R,G,B]（0..255）的指针。
 static int32_t g_rgb_out[3];
 
 __attribute__((export_name("oklch2rgb_calc_js")))
 uint32_t
 oklch2rgb_calc_js(double L, double C, double hdeg)
 {
-    // Normalize inputs
+    // 归一化输入
     if (L < 0.0)
         L = 0.0;
     if (L > 1.0)
         L = 1.0;
     if (C < 0.0)
         C = 0.0;
-    // Gamut fallback: reduce chroma if needed to fit sRGB
+    // 色域回退：如有需要，降低色度以适配 sRGB
     double Csafe = find_gamut_safe_chroma(L, C, hdeg);
     double r_lin, g_lin, b_lin;
     oklch_to_linear_rgb(L, Csafe, hdeg, &r_lin, &g_lin, &b_lin);
-    // Encode to sRGB and clamp to [0,1]
+    // 编码为 sRGB 并夹取到 [0,1]
     double r = linear_to_srgb(r_lin);
     double g = linear_to_srgb(g_lin);
     double b2 = linear_to_srgb(b_lin);
@@ -188,8 +189,8 @@ oklch2rgb_calc_js(double L, double C, double hdeg)
     return (uint32_t)(uintptr_t)g_rgb_out;
 }
 
-// Relative chroma variant for JS: given L, h, rel in [0..1], ignore absolute C.
-// Computes C = rel * Cmax(L,h) and returns pointer to [R,G,B] (0..255).
+// JS 的相对色度版本：给定 L、h、rel（∈ [0..1]），忽略绝对 C。
+// 计算 C = rel * Cmax(L,h)，并返回指向 [R,G,B]（0..255）的指针。
 __attribute__((export_name("oklch2rgb_calc_rel_js")))
 uint32_t
 oklch2rgb_calc_rel_js(double L, double hdeg, double rel)
@@ -205,7 +206,7 @@ oklch2rgb_calc_rel_js(double L, double hdeg, double rel)
 
     double Cmax = max_chroma_for_srgb(L, hdeg);
     double C_use = rel * Cmax;
-    // A final safety pass to counter numeric drift
+    // 最后一轮安全校正以抵消数值漂移
     double Csafe = find_gamut_safe_chroma(L, C_use, hdeg);
 
     double r_lin, g_lin, b_lin;
@@ -299,7 +300,7 @@ int main(int argc, char **argv)
     int G = (int)floor(clamp(g, 0.0, 1.0) * 255.0 + 0.5);
     int B = (int)floor(clamp(b2, 0.0, 1.0) * 255.0 + 0.5);
 
-    // Plain numeric output: R G B
+    // 纯数值输出：R G B
     printf("%d %d %d\n", R, G, B);
     return 0;
 }
