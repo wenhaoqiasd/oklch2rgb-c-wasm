@@ -90,6 +90,7 @@
       // 需要浏览器通过 HTTP(S) 提供正确的 MIME: application/wasm
       let rgb2oklchExports, rgb2oklchMemory;
       let oklch2rgbExports, oklch2rgbMemory;
+      let extractExports, extractMemory;
 
       async function loadRgb2OklchWasm() {
         // 尝试使用 instantiateStreaming（服务器需正确 wasm MIME），否则回退到 arrayBuffer
@@ -192,6 +193,251 @@
 
       loadRgb2OklchWasm();
       loadOklch2RgbWasm();
+    </script>
+
+    <h2 style="margin-top: 24px">
+      extract-colors（图片取色，纯 JS + Wasm, 无胶水）
+    </h2>
+    <div class="row">
+      <input id="file" type="file" accept="image/*" />
+      <button id="draw-demo">绘制示例图</button>
+      <button id="extract">提取颜色</button>
+    </div>
+    <div
+      class="row"
+      style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap"
+    >
+      <div>
+        <canvas
+          id="canvas"
+          style="max-width: 360px; border: 1px solid #ccc"
+        ></canvas>
+        <div style="font-size: 12px; color: #666; margin-top: 4px">
+          预览（将按需子采样，默认像素预算 64000）
+        </div>
+      </div>
+      <div style="min-width: 280px; flex: 1">
+        <div
+          id="swatches"
+          style="display: flex; flex-wrap: wrap; gap: 8px"
+        ></div>
+        <pre id="extract-out" style="margin-top: 12px">加载中...</pre>
+      </div>
+    </div>
+
+    <script>
+      // 加载 extract-colors.wasm
+      async function loadExtractColorsWasm() {
+        try {
+          const resp = await fetch("extract-colors.wasm");
+          const source = resp.headers
+            .get("content-type")
+            ?.includes("application/wasm")
+            ? WebAssembly.instantiateStreaming(fetch("extract-colors.wasm"), {})
+            : WebAssembly.instantiate(await resp.arrayBuffer(), {});
+          const { instance } = await source;
+          extractExports = instance.exports;
+          extractMemory = extractExports.memory;
+          document.getElementById("extract-out").textContent = "WASM 已加载";
+        } catch (e) {
+          document.getElementById("extract-out").textContent =
+            "加载 WASM 失败: " + e;
+          console.error(e);
+        }
+      }
+
+      // 将图片绘制到 canvas 并返回 ImageData
+      function getImageDataFromImage(img) {
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        const maxW = 1024; // 预览缩放上限，算法内部仍会子采样
+        const scale = Math.min(1, maxW / img.naturalWidth);
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.width = w;
+        canvas.height = h;
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        return ctx.getImageData(0, 0, w, h);
+      }
+
+      // 将文件读取为 Image 对象
+      function loadFileToImage(file) {
+        return new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve(img);
+          };
+          img.onerror = reject;
+          img.src = url;
+        });
+      }
+
+      // 在 canvas 上绘制一张程序化示例图（色块+渐变）
+      function drawProgrammaticDemo() {
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const w = 480,
+          h = 320;
+        canvas.width = w;
+        canvas.height = h;
+        // 背景渐变
+        const g = ctx.createLinearGradient(0, 0, w, 0);
+        g.addColorStop(0, "#ff6b6b");
+        g.addColorStop(0.33, "#feca57");
+        g.addColorStop(0.66, "#1dd1a1");
+        g.addColorStop(1, "#54a0ff");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+        // 前景色块
+        const colors = ["#222", "#fff", "#8e44ad", "#16a085", "#d35400"];
+        const cw = 80,
+          ch = 60,
+          pad = 12;
+        colors.forEach((c, i) => {
+          const x = pad + (i % 5) * (cw + pad);
+          const y = h - ch - pad;
+          ctx.fillStyle = c;
+          ctx.fillRect(x, y, cw, ch);
+          ctx.strokeStyle = "rgba(0,0,0,.2)";
+          ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+        });
+        return ctx.getImageData(0, 0, w, h);
+      }
+
+      // 调用 wasm 提取颜色
+      function extractColorsFromImageData(imageData, opts = {}) {
+        if (!extractExports) throw new Error("WASM 未就绪");
+        const { width, height, data } = imageData;
+        const len = data.byteLength >>> 0;
+        // 申请/获取 wasm 像素缓冲区
+        const ptr = extractExports.get_pixels_buffer(len) >>> 0;
+        if (!ptr) throw new Error("get_pixels_buffer 失败");
+        // 将 RGBA 写入 wasm 线性内存
+        const heapU8 = new Uint8Array(extractMemory.buffer, ptr, len);
+        heapU8.set(data);
+
+        // 选项（与 C 默认一致）
+        const pixels = opts.pixels ?? 64000;
+        const distance = opts.distance ?? 0.22;
+        const satDist = opts.saturationDistance ?? 0.2;
+        const lightDist = opts.lightnessDistance ?? 0.2;
+        const hueDist = opts.hueDistance ?? 1 / 12; // ~30°
+        const alphaThreshold = opts.alphaThreshold ?? 250;
+        const maxColors = opts.maxColors ?? 16;
+
+        // 调用 wasm
+        const outPtr =
+          extractExports.extract_colors_from_rgba_js(
+            ptr,
+            width | 0,
+            height | 0,
+            pixels | 0,
+            +distance,
+            +satDist,
+            +lightDist,
+            +hueDist,
+            alphaThreshold | 0,
+            maxColors | 0
+          ) >>> 0;
+        if (!outPtr) throw new Error("extract_colors_from_rgba_js 失败");
+
+        // 读取结果缓冲（double）
+        const f64 = new Float64Array(extractMemory.buffer, outPtr, 1 + 8 * 64);
+        const m = Math.max(0, Math.min(64, Math.floor(f64[0])));
+        const colors = [];
+        for (let i = 0; i < m; i++) {
+          const base = 1 + i * 8;
+          const R = Math.round(f64[base + 0]);
+          const G = Math.round(f64[base + 1]);
+          const B = Math.round(f64[base + 2]);
+          const hue = f64[base + 3];
+          const intensity = f64[base + 4];
+          const lightness = f64[base + 5];
+          const saturation = f64[base + 6];
+          const area = f64[base + 7];
+          const hex = `#${[R, G, B]
+            .map((v) => v.toString(16).padStart(2, "0"))
+            .join("")}`;
+          colors.push({
+            R,
+            G,
+            B,
+            hex,
+            hue,
+            intensity,
+            lightness,
+            saturation,
+            area,
+          });
+        }
+        return { width, height, colors };
+      }
+
+      function renderSwatches(result) {
+        const sw = document.getElementById("swatches");
+        const out = document.getElementById("extract-out");
+        sw.innerHTML = "";
+        const fmt = (x) => {
+          if (!Number.isFinite(x)) return "0";
+          let s = x
+            .toFixed(6)
+            .replace(/\.0+$/, "")
+            .replace(/(\.[0-9]*?)0+$/, "$1");
+          return s;
+        };
+        result.colors.forEach((c) => {
+          const chip = document.createElement("div");
+          chip.style.width = "48px";
+          chip.style.height = "48px";
+          chip.style.borderRadius = "6px";
+          chip.style.border = "1px solid #ccc";
+          chip.style.background = c.hex;
+          chip.title = `${c.hex}\narea ${fmt(c.area)}`;
+          sw.appendChild(chip);
+        });
+        out.textContent = JSON.stringify(result.colors, null, 2);
+      }
+
+      // 交互：文件选择、示例图、提取按钮
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        const img = await loadFileToImage(f);
+        const id = getImageDataFromImage(img);
+        document.getElementById(
+          "extract-out"
+        ).textContent = `图像 ${id.width}×${id.height}`;
+      });
+
+      document.getElementById("draw-demo").addEventListener("click", () => {
+        const id = drawProgrammaticDemo();
+        document.getElementById(
+          "extract-out"
+        ).textContent = `图像 ${id.width}×${id.height}`;
+      });
+
+      document.getElementById("extract").addEventListener("click", () => {
+        try {
+          const canvas = document.getElementById("canvas");
+          if (!(canvas.width && canvas.height)) {
+            document.getElementById("extract-out").textContent =
+              "请先选择图片或点击“从示例图提取”";
+            return;
+          }
+          const ctx = canvas.getContext("2d");
+          const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const result = extractColorsFromImageData(id);
+          renderSwatches(result);
+        } catch (e) {
+          document.getElementById("extract-out").textContent = "提取失败: " + e;
+          console.error(e);
+        }
+      });
+
+      loadExtractColorsWasm();
     </script>
   </body>
 </html>
