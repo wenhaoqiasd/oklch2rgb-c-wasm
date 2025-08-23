@@ -26,9 +26,11 @@
 //
 // 说明：独立实现，仅参考其设计与输出格式。
 
+#ifndef __EMSCRIPTEN__
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +79,11 @@ static double clampd(double x, double lo, double hi)
 
 static int load_image_rgba8(const char *path, Image *out)
 {
+#ifdef __EMSCRIPTEN__
+  (void)path;
+  (void)out;
+  return 0; // 在 WebAssembly 中不提供文件加载
+#else
   memset(out, 0, sizeof(*out));
   CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
   if (!cfPath)
@@ -140,6 +147,7 @@ static int load_image_rgba8(const char *path, Image *out)
     CGColorSpaceRelease(cs);
   CGImageRelease(img);
   return 1;
+#endif
 }
 
 static void free_image(Image *im)
@@ -439,11 +447,12 @@ static void print_hex_from_rgb(uint8_t r, uint8_t g, uint8_t b)
   printf("\"#%s\"", buf);
 }
 
-static int extract_colors_from_image(const Image *im, const Options *opt)
+// 从原始 RGBA 像素缓冲与尺寸进行取色（核心逻辑）
+static int extract_colors_core(const uint8_t *rgba, int w, int h, const Options *opt,
+                               ColorAgg **outAgg, int *outM)
 {
-  int w = im->width, h = im->height;
-  const uint8_t *px = im->rgba;
-  if (w <= 0 || h <= 0 || !px)
+  const uint8_t *px = rgba;
+  if (w <= 0 || h <= 0 || !px || !outAgg || !outM)
     return 0;
 
   // 子采样步长：使采样点数量约等于 opt->pixels
@@ -479,7 +488,8 @@ static int extract_colors_from_image(const Image *im, const Options *opt)
   if (n == 0)
   {
     free(samples);
-    printf("[]\n");
+    *outAgg = NULL;
+    *outM = 0;
     return 1;
   }
 
@@ -506,6 +516,21 @@ static int extract_colors_from_image(const Image *im, const Options *opt)
   int m = 0;
   merge_colors(clusters, K, totalW, opt, &agg, &m);
 
+  free(samples);
+  free(clusters);
+  *outAgg = agg;
+  *outM = m;
+  return 1;
+}
+
+#ifndef __EMSCRIPTEN__
+// 从 Image 取色并输出 JSON（原生 CLI 用）
+static int extract_colors_from_image(const Image *im, const Options *opt)
+{
+  ColorAgg *agg = NULL;
+  int m = 0;
+  if (!extract_colors_core(im->rgba, im->width, im->height, opt, &agg, &m))
+    return 0;
   // 输出 JSON 数组
   printf("[\n");
   for (int i = 0; i < m; ++i)
@@ -531,12 +556,96 @@ static int extract_colors_from_image(const Image *im, const Options *opt)
     printf("}%s\n", (i + 1 < m) ? "," : "");
   }
   printf("]\n");
-
-  free(samples);
-  free(clusters);
   free(agg);
   return 1;
 }
+#endif
+
+#ifdef __EMSCRIPTEN__
+// Emscripten 运行时：确保导出符号不会被裁剪
+#include <emscripten/emscripten.h>
+// ---- Wasm 导出：像素缓冲与结果缓冲 ----
+static uint8_t *g_pixels_buf = NULL;
+static size_t g_pixels_cap = 0;
+
+// 返回一段至少 size 字节的 RGBA 写入缓冲指针（线性内存地址）
+EMSCRIPTEN_KEEPALIVE __attribute__((export_name("get_pixels_buffer")))
+uint32_t
+get_pixels_buffer(uint32_t size)
+{
+  if (size > g_pixels_cap)
+  {
+    // 重新分配
+    uint8_t *nbuf = (uint8_t *)realloc(g_pixels_buf, size);
+    if (!nbuf)
+      return 0;
+    g_pixels_buf = nbuf;
+    g_pixels_cap = size;
+  }
+  return (uint32_t)(uintptr_t)g_pixels_buf;
+}
+
+// 结果按 double 打包：
+// out[0] = 颜色数量 M（double）
+// 紧随其后每个颜色 8 个 double：
+//   [R(0..255), G(0..255), B(0..255), hue(0..1), intensity(0..1), lightness(0..1), saturation(0..1), area(0..1)]
+// 固定最大颜色数上限（避免 JS 端管理内存）：
+#define EXTRACT_MAX_OUT_COLORS 64
+static double g_out_buf[1 + EXTRACT_MAX_OUT_COLORS * 8];
+
+static void pack_results_to_out(const ColorAgg *agg, int m)
+{
+  if (m > EXTRACT_MAX_OUT_COLORS)
+    m = EXTRACT_MAX_OUT_COLORS;
+  g_out_buf[0] = (double)m;
+  for (int i = 0; i < m; ++i)
+  {
+    RGBf c = agg[i].color;
+    double h_, s_, l_;
+    rgb_to_hsl(c.r, c.g, c.b, &h_, &s_, &l_);
+    double R = clampd(c.r, 0.0, 1.0) * 255.0;
+    double G = clampd(c.g, 0.0, 1.0) * 255.0;
+    double B = clampd(c.b, 0.0, 1.0) * 255.0;
+    double intensity = (c.r + c.g + c.b) / 3.0;
+    size_t base = 1 + (size_t)i * 8;
+    g_out_buf[base + 0] = R;
+    g_out_buf[base + 1] = G;
+    g_out_buf[base + 2] = B;
+    g_out_buf[base + 3] = h_;
+    g_out_buf[base + 4] = intensity;
+    g_out_buf[base + 5] = l_;
+    g_out_buf[base + 6] = s_;
+    g_out_buf[base + 7] = agg[i].weight; // area
+  }
+}
+
+// 从 RGBA 指针取色，返回结果缓冲的线性内存地址
+EMSCRIPTEN_KEEPALIVE __attribute__((export_name("extract_colors_from_rgba_js")))
+uint32_t
+extract_colors_from_rgba_js(uint32_t rgba_ptr, int width, int height,
+                            int pixels, double distance, double satDist,
+                            double lightDist, double hueDist,
+                            int alphaThreshold, int maxColors)
+{
+  Options opt;
+  opt.pixels = pixels > 0 ? pixels : 64000;
+  opt.distance = distance;
+  opt.satDist = satDist;
+  opt.lightDist = lightDist;
+  opt.hueDist = hueDist;
+  opt.alphaThreshold = alphaThreshold;
+  opt.maxColors = (maxColors > 0 && maxColors <= EXTRACT_MAX_OUT_COLORS) ? maxColors : 16;
+
+  ColorAgg *agg = NULL;
+  int m = 0;
+  const uint8_t *rgba = (const uint8_t *)(uintptr_t)rgba_ptr;
+  if (!extract_colors_core(rgba, width, height, &opt, &agg, &m))
+    return 0;
+  pack_results_to_out(agg, m);
+  free(agg);
+  return (uint32_t)(uintptr_t)g_out_buf;
+}
+#endif // __EMSCRIPTEN__
 
 static void print_usage(const char *prog)
 {
@@ -550,6 +659,7 @@ static void print_usage(const char *prog)
           prog);
 }
 
+#ifndef __EMSCRIPTEN__
 int main(int argc, char **argv)
 {
   if (argc < 2)
@@ -642,3 +752,4 @@ int main(int argc, char **argv)
   free_image(&im);
   return ok ? 0 : 2;
 }
+#endif
