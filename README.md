@@ -101,6 +101,38 @@ clang -O2 extract-colors.c -o extract-colors \
 
 以上三个工具均先用 C 实现核心算法，再编译为 WebAssembly 用于网页端最小实践（纯原生 JS 加载，无 Emscripten 胶水脚本）。
 
+## 使用 Makefile 一键构建与测试
+
+本仓库已提供顶层 `Makefile`，常用命令：
+
+```zsh
+# 构建本地可执行文件 + 构建三份 WASM + 运行最小烟测
+make all
+
+# 仅构建本地可执行文件（macOS）
+make native
+
+# 仅构建 WASM（需要 emcc 在 PATH 中）
+make wasm
+
+# 运行最小烟测（依赖已构建好的本地可执行文件）
+make test
+
+# 清理产物（本地二进制与 wasm 文件）
+make clean
+```
+
+说明：
+
+- 本地构建使用 `clang -O3 -ffast-math -std=c11`（`oklch2rgb/rgb2oklch` 还带 `-march=native`）。
+- `extract-colors` 本地构建依赖 macOS Frameworks：ImageIO、CoreGraphics、CoreFoundation。
+- WASM 构建采用独立 `.wasm`（`-s STANDALONE_WASM=1 --no-entry`），导出：
+  - `oklch2rgb.wasm`: `oklch2rgb_calc_js`, `oklch2rgb_calc_rel_js`
+  - `rgb2oklch.wasm`: `rgb2oklch_calc_js`
+  - `extract-colors.wasm`: `get_pixels_buffer`, `extract_colors_from_rgba_js`
+
+若尚未安装 Emscripten，请先安装并配置 emcc 到 PATH。
+
 ## WebAssembly 构建与最小示例
 
 - 目录 `wasm/` 下包含可直接在浏览器加载的 `oklch2rgb.wasm`、`rgb2oklch.wasm`、`extract-colors.wasm` 以及演示页面 `minimal.html`（无需 Emscripten JS 胶水）。
