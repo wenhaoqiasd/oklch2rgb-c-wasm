@@ -145,6 +145,37 @@ make clean
   - `oklch2rgb_calc_rel_js(L, h, rel)` → 相对色度版本，返回同上
   - `rgb2oklch_calc_js(R, G, B)` → 返回指向 `[L,C,h]` 的内存指针（float64）
 
+### 浏览器端更简单的 JS API（推荐）
+
+已提供统一模块 `wasm/color-convert.js`，一次初始化同时装载两个 WASM，并导出三个高层方法：
+
+```js
+import {
+  init,
+  rgb2oklch,
+  oklch2rgb_abs,
+  oklch2rgb_rel,
+} from "./wasm/color-convert.js";
+
+// 1) 初始化（幂等，重复调用不会重复加载）
+await init();
+// 可自定义 wasm 路径：await init({ oklch2rgbUrl: 'oklch2rgb.wasm', rgb2oklchUrl: 'rgb2oklch.wasm' });
+
+// 2) sRGB(0..255) -> OKLCH
+const { L, C, h } = rgb2oklch(255, 0, 0);
+
+// 3) OKLCH 绝对色度 -> sRGB(0..255)
+const { R, G, B } = oklch2rgb_abs(0.62796, 0.25754, 29.23388);
+
+// 4) OKLCH 相对色度（0..1） -> sRGB(0..255)
+const rgbRel = oklch2rgb_rel(0.7, 40, 1); // 在该 L/h 下最大可显示色度
+```
+
+说明：
+
+- `init()` 会解析相对路径基于当前模块位置，避免页面结构差异导致的加载失败。
+- 若仅使用提色模块，请参考下文的 `extract-colors.js` 说明；它独立于上述转换模块。
+
 - 浏览器端取色封装（API 对齐 Namide/extract-colors）：
 
 ```js
