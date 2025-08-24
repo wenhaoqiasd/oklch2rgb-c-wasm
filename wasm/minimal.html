@@ -34,6 +34,15 @@
       button {
         padding: 6px 12px;
       }
+      .chip {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        vertical-align: middle;
+        margin-right: 8px;
+      }
     </style>
   </head>
 
@@ -47,7 +56,15 @@
       <label for="b">B</label>
       <input id="b" type="number" min="0" max="255" value="0" />
     </div>
-    <pre id="out">加载中...</pre>
+    <div class="row">
+      <span
+        id="chip-oklch"
+        class="chip"
+        title="oklch(...)"
+        aria-label="OKLCH 颜色"
+      ></span>
+      <pre id="out" style="display: inline-block; margin: 0">加载中...</pre>
+    </div>
 
     <h2 style="margin-top: 24px">oklch2rgb</h2>
     <div class="row">
@@ -81,7 +98,15 @@
         placeholder="(可选)"
       />
     </div>
-    <pre id="out2">加载中...</pre>
+    <div class="row">
+      <span
+        id="chip-rgb"
+        class="chip"
+        title="rgb(...)"
+        aria-label="RGB 颜色"
+      ></span>
+      <pre id="out2" style="display: inline-block; margin: 0">加载中...</pre>
+    </div>
 
     <script type="module">
       import {
@@ -104,6 +129,16 @@
           .replace(/(\.[0-9]*?)0+$/, "$1");
         return s;
       }
+      function fmtPct01(x) {
+        const n = Number(x);
+        if (!Number.isFinite(n)) return "0%";
+        return (
+          (n * 100)
+            .toFixed(2)
+            .replace(/\.0+$/, "")
+            .replace(/(\.[0-9]*?)0+$/, "$1") + "%"
+        );
+      }
 
       async function updateRgb2Oklch() {
         try {
@@ -116,6 +151,13 @@
           document.getElementById("out").textContent = `L ${fmtNum(
             L
           )}  C ${fmtNum(_C)}  h ${fmtNum(_h)}`;
+          // Show OKLCH via CSS color function
+          const chip = document.getElementById("chip-oklch");
+          const cssColor = `oklch(${fmtPct01(L)} ${fmtNum(_C)} ${fmtNum(
+            _h
+          )}deg)`;
+          chip.style.background = cssColor;
+          chip.title = cssColor;
         } catch (e) {
           document.getElementById("out").textContent = "运行失败：" + e;
           console.error(e);
@@ -139,6 +181,11 @@
           document.getElementById(
             "out2"
           ).textContent = `R ${rgb.R}  G ${rgb.G}  B ${rgb.B}`;
+          // Show RGB via CSS color function
+          const chip = document.getElementById("chip-rgb");
+          const cssColor = `rgb(${rgb.R}, ${rgb.G}, ${rgb.B})`;
+          chip.style.background = cssColor;
+          chip.title = cssColor;
         } catch (e) {
           document.getElementById("out2").textContent = "运行失败：" + e;
           console.error(e);
