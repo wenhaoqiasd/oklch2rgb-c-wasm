@@ -292,15 +292,6 @@
       class="row"
       style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap"
     >
-      <div>
-        <canvas
-          id="canvas"
-          style="max-width: 360px; border: 1px solid #ccc"
-        ></canvas>
-        <div style="font-size: 12px; color: #666; margin-top: 4px">
-          预览（将按需子采样，默认像素预算 64000）
-        </div>
-      </div>
       <div style="min-width: 280px; flex: 1">
         <div
           id="swatches"
@@ -310,125 +301,12 @@
       </div>
     </div>
 
-    <script>
-      // 加载 extract-colors.wasm
-      async function loadExtractColorsWasm() {
-        try {
-          const instance = await instantiateWasmWithFallback(
-            "extract-colors.wasm"
-          );
-          extractExports = instance.exports;
-          extractMemory = extractExports.memory;
-          document.getElementById("extract-out").textContent = "WASM 已加载";
-        } catch (e) {
-          document.getElementById("extract-out").textContent =
-            "加载 WASM 失败: " + e;
-          console.error(e);
-        }
-      }
+    <script type="module">
+      import extractColors, {
+        initExtractColorsWasm,
+      } from "./extract-colors.js";
 
-      // 将图片绘制到 canvas 并返回 ImageData
-      function getImageDataFromImage(img) {
-        const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        const maxW = 1024; // 预览缩放上限，算法内部仍会子采样
-        const scale = Math.min(1, maxW / img.naturalWidth);
-        const w = Math.max(1, Math.round(img.naturalWidth * scale));
-        const h = Math.max(1, Math.round(img.naturalHeight * scale));
-        canvas.width = w;
-        canvas.height = h;
-        ctx.clearRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        return ctx.getImageData(0, 0, w, h);
-      }
-
-      // 将文件读取为 Image 对象
-      function loadFileToImage(file) {
-        return new Promise((resolve, reject) => {
-          const url = URL.createObjectURL(file);
-          const img = new Image();
-          img.onload = () => {
-            URL.revokeObjectURL(url);
-            resolve(img);
-          };
-          img.onerror = reject;
-          img.src = url;
-        });
-      }
-
-      // 已移除示例图绘制逻辑
-
-      // 调用 wasm 提取颜色
-      function extractColorsFromImageData(imageData, opts = {}) {
-        if (!extractExports) throw new Error("WASM 未就绪");
-        const { width, height, data } = imageData;
-        const len = data.byteLength >>> 0;
-        // 申请/获取 wasm 像素缓冲区
-        const ptr = extractExports.get_pixels_buffer(len) >>> 0;
-        if (!ptr) throw new Error("get_pixels_buffer 失败");
-        // 将 RGBA 写入 wasm 线性内存
-        const heapU8 = new Uint8Array(extractMemory.buffer, ptr, len);
-        heapU8.set(data);
-
-        // 选项（与 C 默认一致）
-        const pixels = opts.pixels ?? 64000;
-        const distance = opts.distance ?? 0.22;
-        const satDist = opts.saturationDistance ?? 0.2;
-        const lightDist = opts.lightnessDistance ?? 0.2;
-        const hueDist = opts.hueDistance ?? 1 / 12; // ~30°
-        const alphaThreshold = opts.alphaThreshold ?? 250;
-        const maxColors = opts.maxColors ?? 16;
-        console.time("load extract-colors.wasm");
-
-        // 调用 wasm
-        const outPtr =
-          extractExports.extract_colors_from_rgba_js(
-            ptr,
-            width | 0,
-            height | 0,
-            pixels | 0,
-            +distance,
-            +satDist,
-            +lightDist,
-            +hueDist,
-            alphaThreshold | 0,
-            maxColors | 0
-          ) >>> 0;
-        if (!outPtr) throw new Error("extract_colors_from_rgba_js 失败");
-        console.timeEnd("load extract-colors.wasm");
-        // 读取结果缓冲（double）
-        const f64 = new Float64Array(extractMemory.buffer, outPtr, 1 + 8 * 64);
-        const m = Math.max(0, Math.min(64, Math.floor(f64[0])));
-        const colors = [];
-        for (let i = 0; i < m; i++) {
-          const base = 1 + i * 8;
-          const R = Math.round(f64[base + 0]);
-          const G = Math.round(f64[base + 1]);
-          const B = Math.round(f64[base + 2]);
-          const hue = f64[base + 3];
-          const intensity = f64[base + 4];
-          const lightness = f64[base + 5];
-          const saturation = f64[base + 6];
-          const area = f64[base + 7];
-          const hex = `#${[R, G, B]
-            .map((v) => v.toString(16).padStart(2, "0"))
-            .join("")}`;
-          colors.push({
-            R,
-            G,
-            B,
-            hex,
-            hue,
-            intensity,
-            lightness,
-            saturation,
-            area,
-          });
-        }
-        return { width, height, colors };
-      }
-
-      function renderSwatches(result) {
+      function renderSwatches(colors) {
         const sw = document.getElementById("swatches");
         const out = document.getElementById("extract-out");
         sw.innerHTML = "";
@@ -440,7 +318,7 @@
             .replace(/(\.[0-9]*?)0+$/, "$1");
           return s;
         };
-        result.colors.forEach((c) => {
+        colors.forEach((c) => {
           const chip = document.createElement("div");
           chip.style.width = "48px";
           chip.style.height = "48px";
@@ -450,38 +328,55 @@
           chip.title = `${c.hex}\narea ${fmt(c.area)}`;
           sw.appendChild(chip);
         });
-        out.textContent = JSON.stringify(result.colors, null, 2);
+        out.textContent = JSON.stringify(colors, null, 2);
       }
 
-      // 交互：文件选择、示例图、提取按钮
+      // 交互：文件选择 -> 直接走模块内置的共享 Canvas 流程
+      let _lastImage = null;
       document.getElementById("file").addEventListener("change", async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
-        const img = await loadFileToImage(f);
-        const id = getImageDataFromImage(img);
-        document.getElementById(
-          "extract-out"
-        ).textContent = `图像 ${id.width}×${id.height}`;
-      });
-
-      document.getElementById("extract").addEventListener("click", () => {
+        const url = URL.createObjectURL(f);
         try {
-          const canvas = document.getElementById("canvas");
-          if (!(canvas.width && canvas.height)) {
-            document.getElementById("extract-out").textContent = "请先选择图片";
-            return;
-          }
-          const ctx = canvas.getContext("2d");
-          const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const result = extractColorsFromImageData(id);
-          renderSwatches(result);
-        } catch (e) {
-          document.getElementById("extract-out").textContent = "提取失败: " + e;
-          console.error(e);
+          _lastImage = await new Promise((resolve, reject) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = reject;
+            im.src = url;
+          });
+          document.getElementById(
+            "extract-out"
+          ).textContent = `已载入：${_lastImage.naturalWidth}×${_lastImage.naturalHeight}`;
+        } finally {
+          URL.revokeObjectURL(url);
         }
       });
 
-      loadExtractColorsWasm();
+      document.getElementById("extract").addEventListener("click", () => {
+        if (!_lastImage) {
+          document.getElementById("extract-out").textContent = "请先选择图片";
+          return;
+        }
+        initExtractColorsWasm()
+          .then(() => extractColors(_lastImage))
+          .then((colors) => {
+            renderSwatches(colors);
+          })
+          .catch((e) => {
+            document.getElementById("extract-out").textContent =
+              "提取失败: " + e;
+            console.error(e);
+          });
+      });
+      initExtractColorsWasm()
+        .then(() => {
+          document.getElementById("extract-out").textContent = "WASM 已加载";
+        })
+        .catch((e) => {
+          document.getElementById("extract-out").textContent =
+            "加载 WASM 失败: " + e;
+          console.error(e);
+        });
     </script>
   </body>
 </html>
