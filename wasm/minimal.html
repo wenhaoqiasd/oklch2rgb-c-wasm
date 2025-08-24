@@ -85,190 +85,47 @@
     </div>
     <pre id="out2">加载中...</pre>
 
-    <script>
-      // 纯原生加载 .wasm（不使用 Emscripten 生成的 JS）
-      // 需要浏览器通过 HTTP(S) 提供正确的 MIME: application/wasm
-      // 若 .wasm 是 WASI 构建，提供最小 wasi_snapshot_preview1 stub 以便在浏览器中实例化。
-      let rgb2oklchExports, rgb2oklchMemory;
-      let oklch2rgbExports, oklch2rgbMemory;
-      let extractExports, extractMemory;
+    <script type="module">
+      import {
+        init,
+        rgb2oklch as roFn,
+        oklch2rgb_abs,
+        oklch2rgb_rel,
+      } from "./color-convert.js";
 
-      // ---- 最小 WASI stub 与带回退的实例化工具 ----
-      function createWasiStub(memory) {
-        const encoder = new TextEncoder();
-        // 简易写入：忽略内容，仅报告写入 0 字节，避免报错
-        function fd_write(fd, iov, iovcnt, pOut) {
-          try {
-            const view = new DataView(memory.buffer);
-            view.setUint32(pOut >>> 0, 0, true);
-          } catch (_) {}
-          return 0; // __WASI_ERRNO_SUCCESS
-        }
-        function ret0() {
-          return 0;
-        }
-        function enosys() {
-          return 52; // __WASI_ERRNO_ENOSYS
-        }
-        function proc_exit(code) {
-          // 将 WASI 退出转为异常，避免整个页面崩溃
-          throw new Error("WASI proc_exit: " + code);
-        }
-        return {
-          args_get: ret0,
-          args_sizes_get: function (pArgc, pArgvBufSize) {
-            try {
-              const view = new DataView(memory.buffer);
-              view.setUint32(pArgc >>> 0, 0, true);
-              view.setUint32(pArgvBufSize >>> 0, 0, true);
-            } catch (_) {}
-            return 0;
-          },
-          environ_get: ret0,
-          environ_sizes_get: function (pCount, pBufSize) {
-            try {
-              const view = new DataView(memory.buffer);
-              view.setUint32(pCount >>> 0, 0, true);
-              view.setUint32(pBufSize >>> 0, 0, true);
-            } catch (_) {}
-            return 0;
-          },
-          fd_write,
-          fd_close: ret0,
-          fd_read: enosys,
-          fd_seek: enosys,
-          fd_fdstat_get: ret0,
-          fd_fdstat_set_flags: ret0,
-          fd_sync: ret0,
-          fd_prestat_get: enosys,
-          fd_prestat_dir_name: enosys,
-          path_open: enosys,
-          path_unlink_file: enosys,
-          path_create_directory: enosys,
-          path_remove_directory: enosys,
-          path_readlink: enosys,
-          path_filestat_get: enosys,
-          fd_filestat_get: enosys,
-          poll_oneoff: enosys,
-          clock_time_get: ret0,
-          random_get: function (ptr, len) {
-            try {
-              const dst = new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0);
-              crypto.getRandomValues(dst);
-            } catch (_) {}
-            return 0;
-          },
-          proc_exit,
-        };
-      }
-
-      async function instantiateWasmWithFallback(url) {
-        // 先尝试无需 imports 的实例化（适用于独立 wasm）
-        try {
-          const resp = await fetch(url);
-          const source = resp.headers
-            .get("content-type")
-            ?.includes("application/wasm")
-            ? WebAssembly.instantiateStreaming(fetch(url), {})
-            : WebAssembly.instantiate(await resp.arrayBuffer(), {});
-          return (await source).instance;
-        } catch (e1) {
-          // 回退：提供最小 WASI 与 env/imports
-          const buf = await (await fetch(url)).arrayBuffer();
-          // 预创建一块内存以备某些模块需要 env.memory 导入
-          const memory = new WebAssembly.Memory({
-            initial: 256,
-            maximum: 16384,
-          });
-          const imports = {
-            wasi_snapshot_preview1: createWasiStub(memory),
-            env: {
-              memory,
-              abort: function () {},
-              emscripten_notify_memory_growth: function () {},
-            },
-          };
-          const { instance } = await WebAssembly.instantiate(buf, imports);
-          return instance;
-        }
-      }
-
-      async function loadRgb2OklchWasm() {
-        try {
-          const instance = await instantiateWasmWithFallback("rgb2oklch.wasm");
-          rgb2oklchExports = instance.exports;
-          rgb2oklchMemory = rgb2oklchExports.memory; // WebAssembly.Memory
+      // 初始化 WASM 模块（统一）
+      init()
+        .then(() => {
           document.getElementById("out").textContent = "WASM 已加载";
-        } catch (e) {
-          document.getElementById("out").textContent = "加载 WASM 失败: " + e;
-          console.error(e);
-        }
-      }
-
-      async function loadOklch2RgbWasm() {
-        try {
-          const instance = await instantiateWasmWithFallback("oklch2rgb.wasm");
-          oklch2rgbExports = instance.exports;
-          oklch2rgbMemory = oklch2rgbExports.memory;
           document.getElementById("out2").textContent = "WASM 已加载";
-        } catch (e) {
-          document.getElementById("out2").textContent = "加载 WASM 失败: " + e;
+        })
+        .catch((e) => {
+          document.getElementById("out").textContent = "加载失败: " + e;
+          document.getElementById("out2").textContent = "加载失败: " + e;
           console.error(e);
-        }
-      }
+        });
 
-      function rgb2oklch(r, g, b) {
-        if (!rgb2oklchExports) {
-          return "WASM 未就绪";
-        }
-        // 调用导出的 rgb2oklch_calc_js(r,g,b) -> 返回指向 3 个 double 的指针
-        const ptr =
-          rgb2oklchExports.rgb2oklch_calc_js(r | 0, g | 0, b | 0) >>> 0;
-        const f64 = new Float64Array(rgb2oklchMemory.buffer, ptr, 3);
-        let L = f64[0];
-        let C = f64[1];
-        let h = f64[2];
-        // 与 C 程序一致的展示：6 位小数，去尾零，C≈0 时强制 h=0
-        const tiny = 1e-15;
-        const fmt = (x) => {
-          if (Math.abs(x) < tiny) x = 0;
-          let s = x.toFixed(6);
-          // 去掉多余的 0 和小数点
-          s = s.replace(/\.0+$/, "").replace(/(\.[0-9]*?)0+$/, "$1");
-          return s;
-        };
-        if (Math.abs(C) < tiny) {
-          C = 0;
-          h = 0;
-        }
-        return `L ${fmt(L)}  C ${fmt(C)}  h ${fmt(h)}`;
+      function fmtNum(x) {
+        let v = x;
+        if (Math.abs(v) < 1e-15) v = 0;
+        let s = v
+          .toFixed(6)
+          .replace(/\.0+$/, "")
+          .replace(/(\.[0-9]*?)0+$/, "$1");
+        return s;
       }
 
       document.getElementById("run").addEventListener("click", () => {
         const r = +document.getElementById("r").value;
         const g = +document.getElementById("g").value;
         const b = +document.getElementById("b").value;
-        document.getElementById("out").textContent = rgb2oklch(r, g, b);
+        const { L, C, h } = roFn(r, g, b);
+        const _C = Math.abs(C) < 1e-15 ? 0 : C;
+        const _h = _C === 0 ? 0 : h;
+        document.getElementById("out").textContent = `L ${fmtNum(
+          L
+        )}  C ${fmtNum(_C)}  h ${fmtNum(_h)}`;
       });
-
-      function oklch2rgb(L, C, h, rel) {
-        if (!oklch2rgbExports) {
-          return "WASM 未就绪";
-        }
-        // 如果提供了 rel（数字且在 [0,1]），则走相对色度导出；否则使用绝对 C 导出
-        let ptr;
-        if (Number.isFinite(rel)) {
-          const r = Math.max(0, Math.min(1, rel));
-          ptr = oklch2rgbExports.oklch2rgb_calc_rel_js(L, h, r) >>> 0;
-        } else {
-          ptr = oklch2rgbExports.oklch2rgb_calc_js(L, C, h) >>> 0;
-        }
-        const i32 = new Int32Array(oklch2rgbMemory.buffer, ptr, 3);
-        const R = i32[0] | 0;
-        const G = i32[1] | 0;
-        const B = i32[2] | 0;
-        return `R ${R}  G ${G}  B ${B}`;
-      }
 
       document.getElementById("run2").addEventListener("click", () => {
         const L = +document.getElementById("l").value;
@@ -276,11 +133,13 @@
         const H = +document.getElementById("h").value;
         const REL_RAW = document.getElementById("rel").value;
         const rel = REL_RAW === "" ? undefined : +REL_RAW;
-        document.getElementById("out2").textContent = oklch2rgb(L, C, H, rel);
+        const rgb = Number.isFinite(rel)
+          ? oklch2rgb_rel(L, H, rel)
+          : oklch2rgb_abs(L, C, H);
+        document.getElementById(
+          "out2"
+        ).textContent = `R ${rgb.R}  G ${rgb.G}  B ${rgb.B}`;
       });
-
-      loadRgb2OklchWasm();
-      loadOklch2RgbWasm();
     </script>
 
     <h2 style="margin-top: 24px">extract-colors</h2>
