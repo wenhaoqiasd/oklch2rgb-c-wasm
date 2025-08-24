@@ -1,10 +1,9 @@
 // 颜色转换合并模块（浏览器端 ESM）
 // - 统一初始化：一次并行加载 oklch2rgb.wasm 与 rgb2oklch.wasm
 // - 导出 API：
-//   init({ oklch2rgbUrl?, rgb2oklchUrl? })  —— 幂等初始化，重复调用不会重复加载
-//   oklch2rgb_abs(L, C, h)                 —— 绝对色度：OKLCH -> sRGB(0..255)
-//   oklch2rgb_rel(L, h, rel)               —— 相对色度：OKLCH(L,h,相对色度0..1) -> sRGB(0..255)
-//   rgb2oklch(r, g, b)                     —— sRGB(0..255) -> OKLCH
+//   oklch2rgb_abs(L, C, h)                 —— 绝对色度：OKLCH -> sRGB(0..255)（异步）
+//   oklch2rgb_rel(L, h, rel)               —— 相对色度：OKLCH(L,h,相对色度0..1) -> sRGB(0..255)（异步）
+//   rgb2oklch(r, g, b)                     —— sRGB(0..255) -> OKLCH（异步）
 
 // ---- 最小化 WASM 实例化辅助（内联自 wasm-util，按需精简） ----
 function createWasiStub(memory) {
@@ -86,22 +85,18 @@ let okExports = null; // oklch2rgb wasm exports
 let okMem = null;     // oklch2rgb wasm memory
 let rgbExports = null;// rgb2oklch wasm exports
 let rgbMem = null;    // rgb2oklch wasm memory
-let _ready = false;   // 初始化是否完成
-let _initPromise = null; // 初始化中的 Promise，避免重复开销
+let _ready = false;       // 初始化是否完成
+let _initPromise = null;  // 初始化中的 Promise，避免重复开销
 
-/**
- * 初始化（幂等）：并行加载两个 WASM，并保存导出与内存引用。
- * 可选参数允许自定义 wasm 路径；相对路径相对于本模块文件。
- */
-export async function init(options = {}) {
-  if (_ready) return;                // 已完成，直接返回
-  if (_initPromise) return _initPromise; // 进行中，复用同一个 Promise
+// 内部懒加载：并行加载两个 WASM，一次就绪，重复调用复用同一 Promise
+async function ensureReady(options = {}) {
+  if (_ready) return;
+  if (_initPromise) return _initPromise;
   const {
     oklch2rgbUrl = 'oklch2rgb.wasm',
     rgb2oklchUrl = 'rgb2oklch.wasm',
   } = options;
 
-  // 将相对路径解析为相对于当前模块的绝对 URL，避免页面目录差异导致的加载失败
   const okUrl = new URL(oklch2rgbUrl, import.meta.url).href;
   const rgbUrl = new URL(rgb2oklchUrl, import.meta.url).href;
 
@@ -110,22 +105,13 @@ export async function init(options = {}) {
       instantiateWasmWithFallback(okUrl),
       instantiateWasmWithFallback(rgbUrl),
     ]);
-
     okExports = okInst.exports;
     okMem = okExports.memory;
     rgbExports = rgbInst.exports;
     rgbMem = rgbExports.memory;
     _ready = true;
   })();
-
   return _initPromise;
-}
-
-function ensureOk() {
-  if (!okExports || !okMem) throw new Error('oklch2rgb 模块尚未初始化，请先调用 init()');
-}
-function ensureRgb() {
-  if (!rgbExports || !rgbMem) throw new Error('rgb2oklch 模块尚未初始化，请先调用 init()');
 }
 
 // ---- 转换函数 ----
@@ -134,9 +120,9 @@ function ensureRgb() {
  * 入参：L, C, h
  * 返回：{ R, G, B }，范围 0..255
  */
-export function oklch2rgb_abs(L, C, h) {
-  ensureOk();
-  const ptr = okExports.oklch2rgb_calc_js(L, C, h) >>> 0;
+export async function oklch2rgb_abs(L, C, h) {
+  await ensureReady();
+  const ptr = okExports.oklch2rgb_calc_js(+L, +C, +h) >>> 0;
   const i32 = new Int32Array(okMem.buffer, ptr, 3);
   return { R: i32[0] | 0, G: i32[1] | 0, B: i32[2] | 0 };
 }
@@ -146,10 +132,10 @@ export function oklch2rgb_abs(L, C, h) {
  * 入参：L, h, rel（相对色度 0..1）
  * 返回：{ R, G, B }，范围 0..255
  */
-export function oklch2rgb_rel(L, h, rel) {
-  ensureOk();
+export async function oklch2rgb_rel(L, h, rel) {
+  await ensureReady();
   const r = Math.max(0, Math.min(1, Number(rel)));
-  const ptr = okExports.oklch2rgb_calc_rel_js(L, h, r) >>> 0;
+  const ptr = okExports.oklch2rgb_calc_rel_js(+L, +h, r) >>> 0;
   const i32 = new Int32Array(okMem.buffer, ptr, 3);
   return { R: i32[0] | 0, G: i32[1] | 0, B: i32[2] | 0 };
 }
@@ -159,9 +145,10 @@ export function oklch2rgb_rel(L, h, rel) {
  * 入参：r, g, b（0..255）
  * 返回：{ L, C, h }
  */
-export function rgb2oklch(r, g, b) {
-  ensureRgb();
+export async function rgb2oklch(r, g, b) {
+  await ensureReady();
   const ptr = rgbExports.rgb2oklch_calc_js(r | 0, g | 0, b | 0) >>> 0;
   const f64 = new Float64Array(rgbMem.buffer, ptr, 3);
   return { L: f64[0], C: f64[1], h: f64[2] };
 }
+

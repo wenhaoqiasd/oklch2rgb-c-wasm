@@ -46,7 +46,6 @@
       <input id="g" type="number" min="0" max="255" value="0" />
       <label for="b">B</label>
       <input id="b" type="number" min="0" max="255" value="0" />
-      <button id="run">转换</button>
     </div>
     <pre id="out">加载中...</pre>
 
@@ -81,29 +80,20 @@
         step="0.000001"
         placeholder="(可选)"
       />
-      <button id="run2">转换</button>
     </div>
     <pre id="out2">加载中...</pre>
 
     <script type="module">
       import {
-        init,
         rgb2oklch as roFn,
         oklch2rgb_abs,
         oklch2rgb_rel,
       } from "./color-convert.js";
 
-      // 初始化 WASM 模块（统一）
-      init()
-        .then(() => {
-          document.getElementById("out").textContent = "WASM 已加载";
-          document.getElementById("out2").textContent = "WASM 已加载";
-        })
-        .catch((e) => {
-          document.getElementById("out").textContent = "加载失败: " + e;
-          document.getElementById("out2").textContent = "加载失败: " + e;
-          console.error(e);
-        });
+      // color-convert.js 内部会自动初始化，无需在此显式调用。
+      // 初始提示文案：
+      document.getElementById("out").textContent = "计算中...";
+      document.getElementById("out2").textContent = "计算中...";
 
       function fmtNum(x) {
         let v = x;
@@ -115,31 +105,54 @@
         return s;
       }
 
-      document.getElementById("run").addEventListener("click", () => {
-        const r = +document.getElementById("r").value;
-        const g = +document.getElementById("g").value;
-        const b = +document.getElementById("b").value;
-        const { L, C, h } = roFn(r, g, b);
-        const _C = Math.abs(C) < 1e-15 ? 0 : C;
-        const _h = _C === 0 ? 0 : h;
-        document.getElementById("out").textContent = `L ${fmtNum(
-          L
-        )}  C ${fmtNum(_C)}  h ${fmtNum(_h)}`;
-      });
+      async function updateRgb2Oklch() {
+        try {
+          const r = +document.getElementById("r").value;
+          const g = +document.getElementById("g").value;
+          const b = +document.getElementById("b").value;
+          const { L, C, h } = await roFn(r, g, b);
+          const _C = Math.abs(C) < 1e-15 ? 0 : C;
+          const _h = _C === 0 ? 0 : h;
+          document.getElementById("out").textContent = `L ${fmtNum(
+            L
+          )}  C ${fmtNum(_C)}  h ${fmtNum(_h)}`;
+        } catch (e) {
+          document.getElementById("out").textContent = "运行失败：" + e;
+          console.error(e);
+        }
+      }
+      // 输入框 onchange 触发更新
+      ["r", "g", "b"].forEach((id) =>
+        document.getElementById(id).addEventListener("change", updateRgb2Oklch)
+      );
 
-      document.getElementById("run2").addEventListener("click", () => {
-        const L = +document.getElementById("l").value;
-        const C = +document.getElementById("c").value;
-        const H = +document.getElementById("h").value;
-        const REL_RAW = document.getElementById("rel").value;
-        const rel = REL_RAW === "" ? undefined : +REL_RAW;
-        const rgb = Number.isFinite(rel)
-          ? oklch2rgb_rel(L, H, rel)
-          : oklch2rgb_abs(L, C, H);
-        document.getElementById(
-          "out2"
-        ).textContent = `R ${rgb.R}  G ${rgb.G}  B ${rgb.B}`;
-      });
+      async function updateOklch2Rgb() {
+        try {
+          const L = +document.getElementById("l").value;
+          const C = +document.getElementById("c").value;
+          const H = +document.getElementById("h").value;
+          const REL_RAW = document.getElementById("rel").value;
+          const rel = REL_RAW === "" ? undefined : +REL_RAW;
+          const rgb = Number.isFinite(rel)
+            ? await oklch2rgb_rel(L, H, rel)
+            : await oklch2rgb_abs(L, C, H);
+          document.getElementById(
+            "out2"
+          ).textContent = `R ${rgb.R}  G ${rgb.G}  B ${rgb.B}`;
+        } catch (e) {
+          document.getElementById("out2").textContent = "运行失败：" + e;
+          console.error(e);
+        }
+      }
+      // 输入框 onchange 触发更新
+      ["l", "c", "h", "rel"].forEach((id) =>
+        document.getElementById(id).addEventListener("change", updateOklch2Rgb)
+      );
+
+      // 初次自动计算一次
+      (async () => {
+        await Promise.all([updateRgb2Oklch(), updateOklch2Rgb()]);
+      })();
     </script>
 
     <h2 style="margin-top: 24px">extract-colors</h2>
