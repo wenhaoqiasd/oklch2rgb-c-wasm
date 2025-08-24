@@ -74,6 +74,24 @@ static double srgb_to_linear(double u)
     return pow((u + 0.055) / 1.055, 2.4);
 }
 
+// 针对 8 位 sRGB 输入的快速解码查表（用于 Wasm 导出路径）
+static int g_gamma_lut_inited = 0;
+static double g_srgb_u8_to_linear[256];
+static inline void ensure_gamma_lut(void)
+{
+    if (g_gamma_lut_inited)
+        return;
+    for (int i = 0; i < 256; ++i)
+    {
+        double u = (double)i / 255.0;
+        if (u <= 0.04045)
+            g_srgb_u8_to_linear[i] = u / 12.92;
+        else
+            g_srgb_u8_to_linear[i] = pow((u + 0.055) / 1.055, 2.4);
+    }
+    g_gamma_lut_inited = 1;
+}
+
 static OKLCH rgb_to_oklch(RGB255 in)
 {
     // 归一化到 0..1 的 sRGB
@@ -181,8 +199,42 @@ __attribute__((export_name("rgb2oklch_calc_js")))
 uint32_t
 rgb2oklch_calc_js(int r, int g, int b)
 {
-    RGB255 in = {(double)r, (double)g, (double)b};
-    OKLCH o = rgb_to_oklch(in);
+    // 快速路径：直接对 8 位输入进行查表线性化
+    ensure_gamma_lut();
+    double rs = clamp((double)r, 0.0, 255.0);
+    double gs = clamp((double)g, 0.0, 255.0);
+    double bs = clamp((double)b, 0.0, 255.0);
+    double rl = g_srgb_u8_to_linear[(int)rs];
+    double gl = g_srgb_u8_to_linear[(int)gs];
+    double bl = g_srgb_u8_to_linear[(int)bs];
+    // 通过 OKLab 矩阵将线性 sRGB 转为 LMS
+    double l_ = 0.4122214708 * rl + 0.5363325363 * gl + 0.0514459929 * bl;
+    double m_ = 0.2119034982 * rl + 0.6806995451 * gl + 0.1073969566 * bl;
+    double s_ = 0.0883024619 * rl + 0.2817188376 * gl + 0.6299787005 * bl;
+    // 立方根
+    double l = cbrt(l_);
+    double m = cbrt(m_);
+    double s = cbrt(s_);
+    // OKLab
+    double L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    double a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    double bb = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    // OKLCH
+    double C = sqrt(a * a + bb * bb);
+    double h = 0.0;
+    if (C > 1e-12)
+    {
+        double hRad = atan2(bb, a);
+        h = hRad * 180.0 / M_PI;
+        if (h < 0)
+            h += 360.0;
+    }
+    else
+    {
+        C = 0.0;
+        h = 0.0;
+    }
+    OKLCH o = (OKLCH){L, C, h};
     g_oklch_out[0] = o.L;
     g_oklch_out[1] = o.C;
     g_oklch_out[2] = o.h;

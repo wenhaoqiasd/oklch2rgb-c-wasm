@@ -1,0 +1,23 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build oklch2rgb native",
+			"type": "shell",
+			"command": "clang -O3 -march=native -ffast-math -std=c11 oklch2rgb.c -o oklch2rgb",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build rgb2oklch native",
+			"type": "shell",
+			"command": "clang -O3 -march=native -ffast-math -std=c11 rgb2oklch.c -o rgb2oklch",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		}
+	]
+}
