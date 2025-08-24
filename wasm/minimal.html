@@ -333,7 +333,13 @@
           if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
           return Math.round(ms) + " ms";
         };
-        colors.forEach((c) => {
+        // 按占比从高到低排序
+        const sorted = [...colors].sort((a, b) => {
+          const aa = Number.isFinite(a?.area) ? a.area : 0;
+          const bb = Number.isFinite(b?.area) ? b.area : 0;
+          return bb - aa;
+        });
+        sorted.forEach((c) => {
           const chip = document.createElement("div");
           chip.style.width = "48px";
           chip.style.height = "48px";
@@ -345,7 +351,7 @@
         });
         const timing =
           elapsedMs != null ? `耗时 ${fmtTime(elapsedMs)}\n\n` : "";
-        out.textContent = timing + JSON.stringify(colors, null, 2);
+        out.textContent = timing + JSON.stringify(sorted, null, 2);
       }
 
       // 交互：文件选择 -> 直接走模块内置的共享 Canvas 流程
