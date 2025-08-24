@@ -292,6 +292,15 @@
       class="row"
       style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap"
     >
+      <div>
+        <img
+          id="preview"
+          style="max-width: 360px; border: 1px solid #ccc; display: block"
+        />
+        <div style="font-size: 12px; color: #666; margin-top: 4px">
+          预览（抽样与缩放由模块内部共享 Canvas 完成）
+        </div>
+      </div>
       <div style="min-width: 280px; flex: 1">
         <div
           id="swatches"
@@ -302,11 +311,12 @@
     </div>
 
     <script type="module">
-      import extractColors, {
-        initExtractColorsWasm,
-      } from "./extract-colors.js";
+      import extractColors from "./extract-colors.js";
 
-      function renderSwatches(colors) {
+      // 初始提示
+      document.getElementById("extract-out").textContent = "请选择图片";
+
+      function renderSwatches(colors, elapsedMs) {
         const sw = document.getElementById("swatches");
         const out = document.getElementById("extract-out");
         sw.innerHTML = "";
@@ -318,6 +328,11 @@
             .replace(/(\.[0-9]*?)0+$/, "$1");
           return s;
         };
+        const fmtTime = (ms) => {
+          if (!Number.isFinite(ms)) return "0 ms";
+          if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+          return Math.round(ms) + " ms";
+        };
         colors.forEach((c) => {
           const chip = document.createElement("div");
           chip.style.width = "48px";
@@ -328,28 +343,36 @@
           chip.title = `${c.hex}\narea ${fmt(c.area)}`;
           sw.appendChild(chip);
         });
-        out.textContent = JSON.stringify(colors, null, 2);
+        const timing =
+          elapsedMs != null ? `耗时 ${fmtTime(elapsedMs)}\n\n` : "";
+        out.textContent = timing + JSON.stringify(colors, null, 2);
       }
 
       // 交互：文件选择 -> 直接走模块内置的共享 Canvas 流程
       let _lastImage = null;
+      function readFileAsDataURL(file) {
+        return new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = reject;
+          fr.readAsDataURL(file);
+        });
+      }
       document.getElementById("file").addEventListener("change", async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
-        const url = URL.createObjectURL(f);
-        try {
-          _lastImage = await new Promise((resolve, reject) => {
-            const im = new Image();
-            im.onload = () => resolve(im);
-            im.onerror = reject;
-            im.src = url;
-          });
-          document.getElementById(
-            "extract-out"
-          ).textContent = `已载入：${_lastImage.naturalWidth}×${_lastImage.naturalHeight}`;
-        } finally {
-          URL.revokeObjectURL(url);
-        }
+        const dataUrl = await readFileAsDataURL(f);
+        _lastImage = await new Promise((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = reject;
+          im.src = dataUrl;
+        });
+        const preview = document.getElementById("preview");
+        preview.src = dataUrl;
+        document.getElementById(
+          "extract-out"
+        ).textContent = `已载入：${_lastImage.naturalWidth}×${_lastImage.naturalHeight}`;
       });
 
       document.getElementById("extract").addEventListener("click", () => {
@@ -357,10 +380,13 @@
           document.getElementById("extract-out").textContent = "请先选择图片";
           return;
         }
-        initExtractColorsWasm()
-          .then(() => extractColors(_lastImage))
+        const out = document.getElementById("extract-out");
+        out.textContent = "提取中...";
+        const t0 = performance.now();
+        extractColors(_lastImage)
           .then((colors) => {
-            renderSwatches(colors);
+            const dt = performance.now() - t0;
+            renderSwatches(colors, dt);
           })
           .catch((e) => {
             document.getElementById("extract-out").textContent =
@@ -368,15 +394,6 @@
             console.error(e);
           });
       });
-      initExtractColorsWasm()
-        .then(() => {
-          document.getElementById("extract-out").textContent = "WASM 已加载";
-        })
-        .catch((e) => {
-          document.getElementById("extract-out").textContent =
-            "加载 WASM 失败: " + e;
-          console.error(e);
-        });
     </script>
   </body>
 </html>
