@@ -43,6 +43,12 @@
         vertical-align: middle;
         margin-right: 8px;
       }
+      /* 入参变化高亮 */
+      .animating {
+        outline: 2px solid #f90;
+        outline-offset: 2px;
+        transition: outline-color 120ms ease;
+      }
     </style>
   </head>
 
@@ -321,4 +327,106 @@
       });
     </script>
   </body>
+  
+  <hr />
+  <h2 style="margin-top: 24px">squircle-svg (WASM)</h2>
+  <div class="row" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+    <label for="shape">形状</label>
+    <select id="shape">
+      <option value="squircle" selected>squircle</option>
+      <option value="capsule">capsule</option>
+    </select>
+    <label for="w2">W</label>
+    <input id="w2" type="number" min="1" value="200" />
+    <label for="h2">H</label>
+    <input id="h2" type="number" min="1" value="120" />
+    <label for="r2">R</label>
+    <input id="r2" type="number" min="0" value="16" />
+    <button id="gen-shape">生成</button>
+  <button id="toggle-anim" title="在 200↔400 之间以 300ms 每段往返动画">宽度动画</button>
+  </div>
+  <div class="row" style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
+    <svg id="svg-demo" width="300" height="220" viewBox="0 0 200 120">
+      <path id="svg-path" d="" fill="#09f"></path>
+    </svg>
+    <pre id="svg-path-text" style="min-width:320px; flex:1; overflow:auto">加载中...</pre>
+  </div>
+
+  <script type="module">
+    import { getPath } from './squircle-svg.js';
+
+    const $ = (id) => document.getElementById(id);
+    const elShape = $('shape');
+    const elW = $('w2');
+    const elH = $('h2');
+    const elR = $('r2');
+    const btn = $('gen-shape');
+    const svg = $('svg-demo');
+    const pathEl = $('svg-path');
+    const textEl = $('svg-path-text');
+
+    let isRendering = false;
+    async function renderShape(silent = false) {
+      try {
+        if (!silent) textEl.textContent = '生成中...';
+        if (isRendering) return; // 防止并发渲染
+        isRendering = true;
+        const shape = elShape.value;
+        const w = Math.max(1, +elW.value);
+        const h = Math.max(1, +elH.value);
+        const r = Math.max(0, +elR.value);
+        const d = await getPath(shape, w, h, r);
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  // 同步显示尺寸，便于直观看到宽/高变化
+  svg.setAttribute('width', String(w));
+  svg.setAttribute('height', String(h));
+        pathEl.setAttribute('d', d);
+        if (!silent) textEl.textContent = d;
+      } catch (e) {
+        if (!silent) textEl.textContent = '运行失败：' + e;
+        console.error(e);
+      } finally {
+        isRendering = false;
+      }
+    }
+    btn.addEventListener('click', () => renderShape());
+    [elShape, elW, elH, elR].forEach((el) => el.addEventListener('change', () => renderShape()));
+    // 初次渲染
+    renderShape();
+
+    // 宽度差值动画：在 200 ↔ 400 间往返，单段 300ms（线性）。
+    const animBtn = $('toggle-anim');
+    const W_MIN = 300;
+    const W_MAX = 800;
+    const DURATION = 150; // ms per segment
+    let animRunning = false;
+    let rafId = 0;
+    let t0 = 0;
+
+    function loop() {
+      if (!animRunning) return;
+      const now = performance.now();
+      const cycle = ((now - t0) % (DURATION * 2)) / DURATION; // 0..2
+      const t = cycle < 1 ? cycle : 2 - cycle; // 往返 0..1..0
+      const w = W_MIN + (W_MAX - W_MIN) * t; // 线性插值
+      elW.value = Math.max(1, Math.round(w));
+      // 静默渲染，避免每帧重写文本
+      if (!isRendering) renderShape(true);
+      rafId = requestAnimationFrame(loop);
+    }
+
+  animBtn.addEventListener('click', () => {
+      animRunning = !animRunning;
+      animBtn.textContent = animRunning ? '停止动画' : '宽度动画';
+      if (animRunning) {
+        t0 = performance.now();
+    elW.classList.add('animating');
+        loop();
+      } else if (rafId) {
+        cancelAnimationFrame(rafId);
+    elW.classList.remove('animating');
+      }
+    });
+  </script>
+</html>
 </html>

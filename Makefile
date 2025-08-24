@@ -10,9 +10,9 @@ EMCC    ?= emcc
 EMFLAGS ?= -O3 -ffast-math -s STANDALONE_WASM=1 -Wl,--no-entry
 
 # Files
-NATIVE_BINS := oklch2rgb rgb2oklch extract-colors
+NATIVE_BINS := oklch2rgb rgb2oklch extract-colors squircle_svg
 WASM_DIR    := wasm
-WASM_BINS   := $(WASM_DIR)/oklch2rgb.wasm $(WASM_DIR)/rgb2oklch.wasm $(WASM_DIR)/extract-colors.wasm
+WASM_BINS   := $(WASM_DIR)/oklch2rgb.wasm $(WASM_DIR)/rgb2oklch.wasm $(WASM_DIR)/extract-colors.wasm $(WASM_DIR)/squircle-svg.wasm
 
 .PHONY: all native wasm test clean
 
@@ -29,6 +29,9 @@ rgb2oklch: rgb2oklch.c
 extract-colors: extract-colors.c
 	$(CC) $(CFLAGS) $< -o $@ \
 	  -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+
+squircle_svg: squircle_svg.c
+	$(CC) $(CFLAGS) $(NATIVE_EXTRA) $< -o $@
 
 wasm: $(WASM_BINS)
 
@@ -47,6 +50,12 @@ $(WASM_DIR)/extract-colors.wasm: extract-colors.c | $(WASM_DIR)/.dir
 	$(EMCC) $(EMFLAGS) \
 	  -Wl,--export=get_pixels_buffer \
 	  -Wl,--export=extract_colors_from_rgba_js \
+	  $< -o $@
+
+$(WASM_DIR)/squircle-svg.wasm: squircle_svg.c | $(WASM_DIR)/.dir
+	$(EMCC) $(EMFLAGS) \
+	  -Wl,--export=squircle_path_js \
+	  -Wl,--export=capsule_path_js \
 	  $< -o $@
 
 $(WASM_DIR)/.dir:
