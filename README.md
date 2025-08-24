@@ -5,9 +5,8 @@
 ## 编译
 
 ```zsh
-cd /Users/bytedance/Desktop/rgb2oklch
-gcc rgb2oklch.c -o rgb2oklch
-gcc oklch2rgb.c -o oklch2rgb
+gcc -O2 rgb2oklch.c -o rgb2oklch
+gcc -O2 oklch2rgb.c -o oklch2rgb
 ```
 
 ## 工具 1：rgb2oklch
@@ -63,30 +62,78 @@ gcc oklch2rgb.c -o oklch2rgb
 # 128 100 231
 ```
 
+## 工具 3：extract-colors（图片主色/调色板提取）
+
+- 输入：图片路径（CLI），或在浏览器端传入 URL/HTMLImageElement/ImageData。
+- 输出：JSON 数组，每个条目包含：
+  - `hex`, `red`, `green`, `blue`, `hue`, `intensity`, `lightness`, `saturation`, `area`
+
+macOS 下编译 CLI（使用 CoreGraphics/ImageIO 读取图片）：
+
+```zsh
+clang -O2 extract-colors.c -o extract-colors \
+  -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+```
+
+命令行用法（默认与 Namide/extract-colors 接近）：
+
+```zsh
+./extract-colors <image_path> \
+  [--pixels N] [--distance D] \
+  [--saturationDistance S] [--lightnessDistance L] [--hueDistance H] \
+  [--alphaThreshold A] [--maxColors K]
+
+# 默认：pixels=64000, distance=0.22, saturationDistance=0.2,
+#       lightnessDistance=0.2, hueDistance≈1/12(30°), alphaThreshold=250, maxColors=16
+```
+
+示例（输出为 JSON 数组）：
+
+```zsh
+./extract-colors m.png | jq .[0]
+```
+
 ## 说明
 
 - 转换基于 OKLab/OKLCH 参考实现（Björn Ottosson）。
 - 仅使用 sRGB 色彩空间与标准传输函数。
 - 输出为纯数字便于脚本处理；若需固定小数位或 JSON 格式，可在源码中调整打印逻辑。
 
-- python3 -m http.server 8000
-- http://localhost:8000/wasm/minimal.html
+以上三个工具均先用 C 实现核心算法，再编译为 WebAssembly 用于网页端最小实践（纯原生 JS 加载，无 Emscripten 胶水脚本）。
 
 ## WebAssembly 构建与最小示例
 
-- 目录 `wasm/` 下包含可直接在浏览器加载的 `oklch2rgb.wasm` 与 `rgb2oklch.wasm` 以及演示页面 `minimal.html`（无需 Emscripten JS 胶水）。
+- 目录 `wasm/` 下包含可直接在浏览器加载的 `oklch2rgb.wasm`、`rgb2oklch.wasm`、`extract-colors.wasm` 以及演示页面 `minimal.html`（无需 Emscripten JS 胶水）。
 - 演示页输入框新增了相对色度 `rel`（0..1，可留空）：
   - 当 `rel` 留空时：调用绝对色度接口，使用输入的 `C`。
   - 当填写 `rel`（数字且在 [0,1]）：调用相对色度接口，忽略输入的 `C`。
 - 导出函数（供 JS 直接调用）：
+
   - `oklch2rgb_calc_js(L, C, h)` → 返回指向 `[R,G,B]` 的内存指针（int32，0..255）
   - `oklch2rgb_calc_rel_js(L, h, rel)` → 相对色度版本，返回同上
   - `rgb2oklch_calc_js(R, G, B)` → 返回指向 `[L,C,h]` 的内存指针（float64）
 
+- 浏览器端取色封装（API 对齐 Namide/extract-colors）：
+
+```js
+import extractColors from "./wasm/extract-colors.js";
+
+// 输入可为：URL 字符串、HTMLImageElement、ImageData（或 {data,width,height}）
+const colors = await extractColors(imgOrUrlOrImageData, {
+  pixels: 64000,
+  distance: 0.22,
+  saturationDistance: 0.2,
+  lightnessDistance: 0.2,
+  hueDistance: 1 / 12,
+  // colorValidator?: (r,g,b,a) => boolean
+});
+```
+
 运行本地演示：
 
-1. 在项目根目录起一个静态服务器（例如 Python http.server）。
+1. 在项目根目录起一个静态服务器（例如 Python http.server） python3 -m http.server 8000。
 2. 访问 `http://localhost:8000/wasm/minimal.html`。
 3. 在 oklch2rgb 区块中填写 L、h，若要使用相对色度则在 rel 输入 0..1，点击“转换”。
+4. 在 extract-colors 区块选择一张图片，点击“提取颜色”，可看到色卡与 JSON 输出（结果顶部显示本次耗时）。
 
 备注：当前仓库的 wasm 二进制已包含 `oklch2rgb_calc_rel_js` 新导出并通过本地验证；若自行重新编译 wasm，请使用 Emscripten 以独立 wasm（`-s STANDALONE_WASM=1 --no-entry`）方式生成，源码中已通过 `__attribute__((export_name(...)))` 指定导出名。
