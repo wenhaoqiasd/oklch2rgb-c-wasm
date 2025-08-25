@@ -33,22 +33,21 @@ static size_t fmt3(double x, char *out, size_t out_size)
 {
   if (out_size == 0)
     return 0;
-  long long s = llround(x * 1000.0);
+
+  // 对齐 JavaScript Math.round 的行为：四舍五入，0.5 情况朝正无穷方向
+  // 等价于 floor(x * 1000 + 0.5)
+  double scaled = x * 1000.0;
+  double rounded = floor(scaled + 0.5);
+
+  // 规避 -0 的显示（与 JS 字符串化一致）
+  if (rounded == 0.0)
+    rounded = 0.0;
+
+  long long s = (long long)rounded;
   int neg = (s < 0);
   unsigned long long us = (unsigned long long)(neg ? -s : s);
   unsigned long long ip = us / 1000ULL;
   unsigned long long frac = us % 1000ULL;
-
-  if (frac != 0ULL)
-  {
-    if (frac % 10ULL == 0ULL)
-    {
-      if (frac % 100ULL == 0ULL)
-        frac /= 100ULL;
-      else
-        frac /= 10ULL;
-    }
-  }
 
   char buf[64];
   size_t p = 0;
@@ -73,16 +72,22 @@ static size_t fmt3(double x, char *out, size_t out_size)
 
   if (frac != 0ULL)
   {
-    buf[p++] = '.';
-    char ft[8];
-    size_t fi = 0;
-    while (frac > 0ULL && fi < sizeof(ft))
+    // 打印固定 3 位再去除末尾 0，避免丢失中间的 0（如 296.076）
+    char ft3[3];
+    ft3[0] = (char)('0' + (int)((frac / 100ULL) % 10ULL));
+    ft3[1] = (char)('0' + (int)((frac / 10ULL) % 10ULL));
+    ft3[2] = (char)('0' + (int)(frac % 10ULL));
+
+    int flen = 3;
+    while (flen > 0 && ft3[flen - 1] == '0')
+      --flen; // 仅移除末尾 0
+
+    if (flen > 0)
     {
-      ft[fi++] = (char)('0' + (frac % 10ULL));
-      frac /= 10ULL;
+      buf[p++] = '.';
+      for (int i = 0; i < flen && p < (int)sizeof(buf); ++i)
+        buf[p++] = ft3[i];
     }
-    for (size_t i = 0; i < fi && p < sizeof(buf); ++i)
-      buf[p++] = ft[fi - 1 - i];
   }
 
   size_t n = (p < out_size - 1) ? p : (out_size - 1);
