@@ -81,6 +81,11 @@ test: native
 	else \
 	  echo "[SKIP] extract-colors (m.png not found)"; \
 	fi
+	if command -v node >/dev/null 2>&1; then \
+	  node scripts/verify_capsule_equiv.js; \
+	else \
+	  echo "[SKIP] capsule verify (node not found)"; \
+	fi
 
 clean:
 	rm -f $(NATIVE_BINS)

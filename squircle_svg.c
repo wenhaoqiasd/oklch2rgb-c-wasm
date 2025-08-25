@@ -12,10 +12,10 @@
 
 typedef struct
 {
-  double r160, r103, r075, r010, r054, r020, r035;
+  double r160, r103, r075, r010, r054, r020, r035, r096;
 } RadiusVals;
 
-static RadiusVals get_radius_values(double r)
+static inline RadiusVals get_radius_values(double r)
 {
   RadiusVals v;
   v.r160 = r * 1.6;
@@ -25,6 +25,7 @@ static RadiusVals get_radius_values(double r)
   v.r054 = r * 0.546009;
   v.r020 = r * 0.204867;
   v.r035 = r * 0.357847;
+  v.r096 = r * 0.96;
   return v;
 }
 
@@ -211,8 +212,7 @@ static void precompute_fmt(double w, double h, double r, const RadiusVals *v, Pr
   pf->r054_len = fmt3(v->r054, pf->r054, sizeof(pf->r054));
   pf->r020_len = fmt3(v->r020, pf->r020, sizeof(pf->r020));
   pf->r035_len = fmt3(v->r035, pf->r035, sizeof(pf->r035));
-  double r096 = r * 0.96;
-  pf->r096_len = fmt3(r096, pf->r096, sizeof(pf->r096));
+  pf->r096_len = fmt3(v->r096, pf->r096, sizeof(pf->r096));
 
   pf->wm_r160_len = fmt3(w - v->r160, pf->wm_r160, sizeof(pf->wm_r160));
   pf->wm_r103_len = fmt3(w - v->r103, pf->wm_r103, sizeof(pf->wm_r103));
@@ -229,7 +229,7 @@ static void precompute_fmt(double w, double h, double r, const RadiusVals *v, Pr
   pf->hm_r035_len = fmt3(h - v->r035, pf->hm_r035, sizeof(pf->hm_r035));
   pf->hm_r020_len = fmt3(h - v->r020, pf->hm_r020, sizeof(pf->hm_r020));
   pf->hm_r010_len = fmt3(h - v->r010, pf->hm_r010, sizeof(pf->hm_r010));
-  pf->hm_r096_len = fmt3(h - r096, pf->hm_r096, sizeof(pf->hm_r096));
+  pf->hm_r096_len = fmt3(h - v->r096, pf->hm_r096, sizeof(pf->hm_r096));
 }
 
 static char *build_path_squircle(double w, double h, double r)
@@ -400,150 +400,150 @@ static char *build_path_capsule(double w, double h, double r)
   sb_init(&sb, 2048);
 
   SB_APP_LIT(&sb, "M ");
-  sb_append(&sb, pf.wm_r160);
+  sb_append_len(&sb, pf.wm_r160, pf.wm_r160_len);
   SB_APP_LIT(&sb, " 0 H ");
-  sb_append(&sb, pf.r160);
+  sb_append_len(&sb, pf.r160, pf.r160_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.r103);
+  sb_append_len(&sb, pf.r103, pf.r103_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.r075);
+  sb_append_len(&sb, pf.r075, pf.r075_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.r054);
+  sb_append_len(&sb, pf.r054, pf.r054_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r010);
+  sb_append_len(&sb, pf.r010, pf.r010_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.r035);
+  sb_append_len(&sb, pf.r035, pf.r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r020);
+  sb_append_len(&sb, pf.r020, pf.r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r020);
+  sb_append_len(&sb, pf.r020, pf.r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r035);
+  sb_append_len(&sb, pf.r035, pf.r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r010);
+  sb_append_len(&sb, pf.r010, pf.r010_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r054);
+  sb_append_len(&sb, pf.r054, pf.r054_len);
 
   SB_APP_LIT(&sb, " C 0 ");
-  sb_append(&sb, pf.r075);
+  sb_append_len(&sb, pf.r075, pf.r075_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.r096);
+  sb_append_len(&sb, pf.r096, pf.r096_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.r);
+  sb_append_len(&sb, pf.r, pf.r_len);
 
   SB_APP_LIT(&sb, " C 0 ");
-  sb_append(&sb, pf.hm_r096);
+  sb_append_len(&sb, pf.hm_r096, pf.hm_r096_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.hm_r075);
+  sb_append_len(&sb, pf.hm_r075, pf.hm_r075_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r010);
+  sb_append_len(&sb, pf.r010, pf.r010_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r054);
+  sb_append_len(&sb, pf.hm_r054, pf.hm_r054_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.r020);
+  sb_append_len(&sb, pf.r020, pf.r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r035);
+  sb_append_len(&sb, pf.hm_r035, pf.hm_r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r035);
+  sb_append_len(&sb, pf.r035, pf.r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r020);
+  sb_append_len(&sb, pf.hm_r020, pf.hm_r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r054);
+  sb_append_len(&sb, pf.r054, pf.r054_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r010);
+  sb_append_len(&sb, pf.hm_r010, pf.hm_r010_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.r075);
+  sb_append_len(&sb, pf.r075, pf.r075_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.h);
+  sb_append_len(&sb, pf.h, pf.h_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r103);
+  sb_append_len(&sb, pf.r103, pf.r103_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.h);
+  sb_append_len(&sb, pf.h, pf.h_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r160);
+  sb_append_len(&sb, pf.r160, pf.r160_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.h);
+  sb_append_len(&sb, pf.h, pf.h_len);
 
   SB_APP_LIT(&sb, " H ");
-  sb_append(&sb, pf.wm_r160);
+  sb_append_len(&sb, pf.wm_r160, pf.wm_r160_len);
   SB_APP_LIT(&sb, " H ");
-  sb_append(&sb, pf.wm_r160);
+  sb_append_len(&sb, pf.wm_r160, pf.wm_r160_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.wm_r103);
+  sb_append_len(&sb, pf.wm_r103, pf.wm_r103_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.h);
+  sb_append_len(&sb, pf.h, pf.h_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r075);
+  sb_append_len(&sb, pf.wm_r075, pf.wm_r075_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.h);
+  sb_append_len(&sb, pf.h, pf.h_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r054);
+  sb_append_len(&sb, pf.wm_r054, pf.wm_r054_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r010);
+  sb_append_len(&sb, pf.hm_r010, pf.hm_r010_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.wm_r035);
+  sb_append_len(&sb, pf.wm_r035, pf.wm_r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r020);
+  sb_append_len(&sb, pf.hm_r020, pf.hm_r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r020);
+  sb_append_len(&sb, pf.wm_r020, pf.wm_r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r035);
+  sb_append_len(&sb, pf.hm_r035, pf.hm_r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r010);
+  sb_append_len(&sb, pf.wm_r010, pf.wm_r010_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r054);
+  sb_append_len(&sb, pf.hm_r054, pf.hm_r054_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.w);
+  sb_append_len(&sb, pf.w, pf.w_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r075);
+  sb_append_len(&sb, pf.hm_r075, pf.hm_r075_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.w);
+  sb_append_len(&sb, pf.w, pf.w_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.hm_r096);
+  sb_append_len(&sb, pf.hm_r096, pf.hm_r096_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.w);
+  sb_append_len(&sb, pf.w, pf.w_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r);
+  sb_append_len(&sb, pf.r, pf.r_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.w);
+  sb_append_len(&sb, pf.w, pf.w_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r096);
+  sb_append_len(&sb, pf.r096, pf.r096_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.w);
+  sb_append_len(&sb, pf.w, pf.w_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r075);
+  sb_append_len(&sb, pf.r075, pf.r075_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r010);
+  sb_append_len(&sb, pf.wm_r010, pf.wm_r010_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r054);
+  sb_append_len(&sb, pf.r054, pf.r054_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.wm_r020);
+  sb_append_len(&sb, pf.wm_r020, pf.wm_r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r035);
+  sb_append_len(&sb, pf.r035, pf.r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r035);
+  sb_append_len(&sb, pf.wm_r035, pf.wm_r035_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r020);
+  sb_append_len(&sb, pf.r020, pf.r020_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.wm_r054);
+  sb_append_len(&sb, pf.wm_r054, pf.wm_r054_len);
   SB_APP_LIT(&sb, " ");
-  sb_append(&sb, pf.r010);
+  sb_append_len(&sb, pf.r010, pf.r010_len);
 
   SB_APP_LIT(&sb, " C ");
-  sb_append(&sb, pf.wm_r075);
+  sb_append_len(&sb, pf.wm_r075, pf.wm_r075_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.wm_r103);
+  sb_append_len(&sb, pf.wm_r103, pf.wm_r103_len);
   SB_APP_LIT(&sb, " 0 ");
-  sb_append(&sb, pf.wm_r160);
+  sb_append_len(&sb, pf.wm_r160, pf.wm_r160_len);
   SB_APP_LIT(&sb, " 0 Z");
 
   return sb.data;
